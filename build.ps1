@@ -7,6 +7,42 @@ $ldflags = "-s -w -X main.Version=$version"
 if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
 New-Item -ItemType Directory -Path $outDir | Out-Null
 
+# --- Build embedded relay binaries (for TCP forwarding fallback) ---
+$relayDir = "pkg/forwarding/relaybin"
+New-Item -ItemType Directory -Force -Path $relayDir | Out-Null
+$relayTargets = @(
+    @{ GOOS="linux";  GOARCH="amd64" },
+    @{ GOOS="linux";  GOARCH="arm64" },
+    @{ GOOS="darwin"; GOARCH="amd64" },
+    @{ GOOS="darwin"; GOARCH="arm64" }
+)
+foreach ($rt in $relayTargets) {
+    $rname = "relay-$($rt.GOOS)-$($rt.GOARCH)"
+    $rpath = Join-Path $relayDir $rname
+    Write-Host "Building relay: $rname ..." -ForegroundColor Yellow
+    $env:GOOS = $rt.GOOS
+    $env:GOARCH = $rt.GOARCH
+    $env:CGO_ENABLED = "0"
+    go build -ldflags "-s -w" -trimpath -o $rpath ./cmd/relay
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "FAILED: relay $rname" -ForegroundColor Red
+        exit 1
+    }
+    # Gzip the relay binary
+    $raw = [System.IO.File]::ReadAllBytes($rpath)
+    $ms = New-Object System.IO.MemoryStream
+    $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionLevel]::Optimal)
+    $gz.Write($raw, 0, $raw.Length)
+    $gz.Close()
+    [System.IO.File]::WriteAllBytes("$rpath.gz", $ms.ToArray())
+    $ms.Close()
+    $origKB = [math]::Round($raw.Length / 1KB)
+    $gzKB = [math]::Round((Get-Item "$rpath.gz").Length / 1KB)
+    Write-Host "  -> ${origKB}KB -> ${gzKB}KB (gzipped)" -ForegroundColor Green
+}
+Write-Host ""
+
+# --- Build main flyssh binaries ---
 $targets = @(
     @{ GOOS="windows"; GOARCH="amd64"; ext=".exe" },
     @{ GOOS="windows"; GOARCH="arm64"; ext=".exe" },

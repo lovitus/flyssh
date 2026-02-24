@@ -1,0 +1,17 @@
+# Binaries
+dist/
+*.exe
+flyssh
+
+# Relay binaries (rebuilt by build.ps1)
+pkg/forwarding/relaybin/
+
+# Go
+go.work
+go.work.sum
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

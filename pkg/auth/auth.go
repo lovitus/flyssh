@@ -27,6 +27,11 @@ func BuildAuthMethodsForSecondHost(cfg *config.ResolvedConfig, opts *cli.Options
 	return buildAuthMethodsWithPassword(cfg, opts, opts.SecondHostPassword)
 }
 
+// BuildAuthMethodsForHop constructs auth methods for an arbitrary hop with an explicit password.
+func BuildAuthMethodsForHop(cfg *config.ResolvedConfig, opts *cli.Options, password string) ([]ssh.AuthMethod, error) {
+	return buildAuthMethodsWithPassword(cfg, opts, password)
+}
+
 func buildAuthMethodsWithPassword(cfg *config.ResolvedConfig, opts *cli.Options, password string) ([]ssh.AuthMethod, error) {
 	var methods []ssh.AuthMethod
 
@@ -93,9 +98,9 @@ func buildAuthMethodsWithPassword(cfg *config.ResolvedConfig, opts *cli.Options,
 }
 
 // GetHostKeyCallback returns an appropriate host key callback.
-// When --password is provided: auto-accept first-time fingerprints, require
-// typing "confirm fingerprint changed" when the key has changed.
-// When no --password: behave like classic OpenSSH (ask yes/no).
+// Default: auto-accept new fingerprints (like StrictHostKeyChecking=accept-new),
+// but warn and block if an existing key changes (possible MITM).
+// mode "no" = accept everything; mode "ask" = classic OpenSSH yes/no; mode "yes" = reject unknown.
 func GetHostKeyCallback(cfg *config.ResolvedConfig, opts *cli.Options) ssh.HostKeyCallback {
 	mode := strings.ToLower(cfg.StrictHostKeyChecking)
 
@@ -103,7 +108,7 @@ func GetHostKeyCallback(cfg *config.ResolvedConfig, opts *cli.Options) ssh.HostK
 		return ssh.InsecureIgnoreHostKey()
 	}
 
-	autoAcceptNew := opts.Password != ""
+	autoAcceptNew := mode != "ask"
 
 	knownHostsFile := resolveKnownHostsFile(cfg)
 

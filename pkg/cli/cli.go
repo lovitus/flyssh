@@ -47,14 +47,19 @@ type Options struct {
 	PasswordFile string // --password-file PATH (read password from file)
 
 	// Second host (two-hop jump)
-	SecondHost    string // --secondhost user:pass@host:port (raw spec)
-	SecondHostKey string // --secondhostkey /path/to/key
+	SecondHost     string // --secondhost user:pass@host:port (raw spec)
+	SecondHostKey  string // --secondhostkey /path/to/key
+	SecondHostPass string // --secondhostpass (separate password flag, overrides inline)
 
 	// Parsed second host fields (filled after parsing)
 	SecondHostUser     string
 	SecondHostPassword string
 	SecondHostHostname string
 	SecondHostPort     int
+
+	// Auto-reconnect
+	NoReconnect    bool // --no-reconnect
+	ReconnectDelay int  // --reconnect-delay seconds (default 3)
 
 	// Port forwarding
 	LocalForwards   []string // -L
@@ -76,6 +81,22 @@ type Options struct {
 
 	// Subsystem
 	Subsystem bool // -s
+
+	// Multi-hop: additional hosts beyond the first positional arg
+	ExtraHosts []string // raw specs: "user:pass@host:port"
+
+	// Per-hop keys/passwords (comma-separated, empty slots = skip)
+	KeysCSV      string // --keys "key1,,key3,,,key6,"
+	PasswordsCSV string // --passwords "pass1,,pass3"
+}
+
+// HopSpec describes a single hop in a multi-hop SSH chain.
+type HopSpec struct {
+	User     string
+	Password string
+	Host     string
+	Port     int
+	KeyFile  string
 }
 
 func PrintUsage() {
@@ -124,11 +145,37 @@ Authentication:
   --password-env VAR    Read password from environment variable
   --password-file PATH  Read password from file (more secure)
 
-Two-hop Jump:
+Multi-hop (chain through unlimited machines):
+  flyssh user1:pass1@host1 user2:pass2@host2 user3@host3:2222 [command]
+  Each positional arg with @ is a hop. Last hop gets the shell/forwarding.
+  --keys "k1,,k3,,,k6,"   Per-hop identity files (comma-separated, empty=skip)
+  --passwords "p1,,p3"    Per-hop passwords (comma-separated, empty=skip)
+  --key FILE              Single key applied to ALL hops (if --keys not set)
+
+  Password escaping (inline or --passwords):
+    Backslash:  user:p\@ss\:word@host:22
+    Quotes:     user:"p@ss:word"@host:22  or  user:'p@ss:word'@host:22
+
+  Port forwarding (-D/-L/-R) applies to the last hop.
+
+Legacy two-hop (still supported):
   --secondhost user:pass@host:port  Second host connection string
   --secondhostkey PATH              Identity file for second host
+  --secondhostpass PASS             Password for second host (overrides inline)
 
-  Port forwarding (-D/-L/-R) applies to second host when present.
+Easy Forwarding (GOST-style):
+  -dynamicproxy://[host:]port          Dynamic SOCKS5 proxy
+  -ltcp://[host:]port/[host:]port[,...]  Local forward  (comma-separated pairs)
+  -rtcp://[host:]port/[host:]port[,...]  Remote forward (comma-separated pairs)
+
+  Format: host:port | :port | port — missing host defaults to 127.0.0.1
+  Example: -ltcp://:8081/host3:22      listen local :8081 → host3:22 via chain
+  Example: -ltcp://:5000/:5000,:2222/192.168.1.1:22  two local forwards in one flag
+  Example: -rtcp://0.0.0.0:8082/127.0.0.1:80  remote :8082 → local :80
+
+Reconnect:
+  --no-reconnect          Disable auto-reconnect (enabled by default with --password)
+  --reconnect-delay N     Seconds between reconnect attempts (default: 3)
 
 Security Note:
   --password on the command line may be visible in shell history and
@@ -193,6 +240,44 @@ func ParseArgs(args []string) (*Options, error) {
 				opts.SecondHostKey = args[i]
 			case strings.HasPrefix(arg, "--secondhostkey="):
 				opts.SecondHostKey = arg[len("--secondhostkey="):]
+			case arg == "--secondhostpass" && i+1 < len(args):
+				i++
+				opts.SecondHostPass = args[i]
+			case strings.HasPrefix(arg, "--secondhostpass="):
+				opts.SecondHostPass = arg[len("--secondhostpass="):]
+			case arg == "--keys" && i+1 < len(args):
+				i++
+				opts.KeysCSV = args[i]
+			case strings.HasPrefix(arg, "--keys="):
+				opts.KeysCSV = arg[len("--keys="):]
+			case arg == "--passwords" && i+1 < len(args):
+				i++
+				opts.PasswordsCSV = args[i]
+			case strings.HasPrefix(arg, "--passwords="):
+				opts.PasswordsCSV = arg[len("--passwords="):]
+			case arg == "--no-reconnect":
+				opts.NoReconnect = true
+			case arg == "--reconnect-delay" && i+1 < len(args):
+				i++
+				d := 0
+				for _, c := range args[i] {
+					if c >= '0' && c <= '9' {
+						d = d*10 + int(c-'0')
+					}
+				}
+				if d > 0 {
+					opts.ReconnectDelay = d
+				}
+			case strings.HasPrefix(arg, "--reconnect-delay="):
+				d := 0
+				for _, c := range arg[len("--reconnect-delay="):] {
+					if c >= '0' && c <= '9' {
+						d = d*10 + int(c-'0')
+					}
+				}
+				if d > 0 {
+					opts.ReconnectDelay = d
+				}
 			case arg == "--version":
 				opts.ShowVersion = true
 			case arg == "--help":
@@ -205,12 +290,43 @@ func ParseArgs(args []string) (*Options, error) {
 			continue
 		}
 
+		// GOST-style single-dash URL flags: -dynamicproxy:// -ltcp:// -rtcp://
+		if strings.HasPrefix(arg, "-dynamicproxy://") {
+			val := arg[len("-dynamicproxy://"):]
+			opts.DynamicForwards = append(opts.DynamicForwards, normalizeBind(val))
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-ltcp://") {
+			val := arg[len("-ltcp://"):]
+			for _, pair := range strings.Split(val, ",") {
+				if pair != "" {
+					opts.LocalForwards = append(opts.LocalForwards, normalizeTcpForward(pair))
+				}
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-rtcp://") {
+			val := arg[len("-rtcp://"):]
+			for _, pair := range strings.Split(val, ",") {
+				if pair != "" {
+					opts.RemoteForwards = append(opts.RemoteForwards, normalizeTcpForward(pair))
+				}
+			}
+			i++
+			continue
+		}
+
 		if arg[0] != '-' {
-			// First non-option is [user@]host
 			if opts.Host == "" {
+				// First positional arg is [user@]host
 				opts.Host = arg
+			} else if strings.Contains(arg, "@") {
+				// Additional positional args with @ are extra hops
+				opts.ExtraHosts = append(opts.ExtraHosts, arg)
 			} else {
-				// Remaining args are the command
+				// First arg without @ after hosts is the command
 				opts.Command = strings.Join(args[i:], " ")
 				break
 			}
@@ -349,11 +465,24 @@ func ParseArgs(args []string) (*Options, error) {
 		i++
 	}
 
-	// Parse user@host
+	// Parse user[:pass]@host[:port] for first host
 	if opts.Host != "" && strings.Contains(opts.Host, "@") {
-		parts := strings.SplitN(opts.Host, "@", 2)
-		opts.User = parts[0]
-		opts.Host = parts[1]
+		hop, err := ParseHopSpec(opts.Host)
+		if err != nil {
+			// Fallback to simple user@host
+			parts := strings.SplitN(opts.Host, "@", 2)
+			opts.User = parts[0]
+			opts.Host = parts[1]
+		} else {
+			opts.User = hop.User
+			opts.Host = hop.Host
+			if hop.Port != 22 && opts.Port == 0 {
+				opts.Port = hop.Port
+			}
+			if hop.Password != "" && opts.Password == "" {
+				opts.Password = hop.Password
+			}
+		}
 	}
 
 	// -l overrides user@host
@@ -380,31 +509,67 @@ func ParseArgs(args []string) (*Options, error) {
 		}
 	}
 
+	// --secondhostpass overrides inline password
+	if opts.SecondHostPass != "" {
+		opts.SecondHostPassword = opts.SecondHostPass
+	}
+
 	return opts, nil
 }
 
-// parseSecondHost parses "user:pass@host:port" into SecondHost* fields
+// ParseHopSpec parses a "user[:pass]@host[:port]" string into a HopSpec.
+// Supports the same escaping as --secondhost (backslash, single/double quotes).
+func ParseHopSpec(spec string) (HopSpec, error) {
+	hop := HopSpec{Port: 22}
+
+	userPart, hostPart, err := splitOnUnescaped(spec, '@')
+	if err != nil {
+		return hop, fmt.Errorf("expected user[:pass]@host[:port], got %q", spec)
+	}
+
+	userName, password, hasPass := splitFirstUnescaped(userPart, ':')
+	hop.User = unescapeStr(userName)
+	if hasPass {
+		hop.Password = unescapeStr(password)
+	}
+
+	if h, p, err := splitHostPort(hostPart); err == nil {
+		hop.Host = h
+		hop.Port = p
+	} else {
+		hop.Host = hostPart
+	}
+
+	if hop.Host == "" {
+		return hop, fmt.Errorf("empty hostname in %q", spec)
+	}
+	if hop.User == "" {
+		return hop, fmt.Errorf("empty user in %q", spec)
+	}
+	return hop, nil
+}
+
+// parseSecondHost parses "user:pass@host:port" into SecondHost* fields.
+// Supports backslash escaping (\@ \: \\) and quoted passwords ("..." or '...').
 func parseSecondHost(opts *Options) error {
 	spec := opts.SecondHost
 
-	// Split on last '@' to separate user:pass from host:port
-	atIdx := strings.LastIndex(spec, "@")
-	if atIdx == -1 {
-		return fmt.Errorf("expected user:pass@host:port or user@host:port, got %q", spec)
+	// Find the split point between user:pass and host:port.
+	// We need to find the last unescaped, unquoted '@'.
+	userPart, hostPart, err := splitOnUnescaped(spec, '@')
+	if err != nil {
+		return fmt.Errorf("expected user[:pass]@host[:port], got %q", spec)
 	}
 
-	userPart := spec[:atIdx]
-	hostPart := spec[atIdx+1:]
-
-	// Parse user:password (password is optional)
-	if colonIdx := strings.Index(userPart, ":"); colonIdx != -1 {
-		opts.SecondHostUser = userPart[:colonIdx]
-		opts.SecondHostPassword = userPart[colonIdx+1:]
-	} else {
-		opts.SecondHostUser = userPart
+	// Parse user:password from userPart.
+	// Find first unescaped, unquoted ':' for user:pass separation.
+	userName, password, hasPass := splitFirstUnescaped(userPart, ':')
+	opts.SecondHostUser = unescapeStr(userName)
+	if hasPass {
+		opts.SecondHostPassword = unescapeStr(password)
 	}
 
-	// Parse host:port
+	// Parse host:port (no escaping needed here — host:port is simple)
 	opts.SecondHostPort = 22
 	if h, p, err := splitHostPort(hostPart); err == nil {
 		opts.SecondHostHostname = h
@@ -421,6 +586,145 @@ func parseSecondHost(opts *Options) error {
 	}
 
 	return nil
+}
+
+// splitOnUnescaped splits s on the last occurrence of sep that is not
+// inside quotes or preceded by a backslash.
+func splitOnUnescaped(s string, sep byte) (left, right string, err error) {
+	lastIdx := -1
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if c == sep && !inSingle && !inDouble {
+			lastIdx = i
+		}
+	}
+	if lastIdx == -1 {
+		return "", "", fmt.Errorf("separator '%c' not found", sep)
+	}
+	return s[:lastIdx], s[lastIdx+1:], nil
+}
+
+// splitFirstUnescaped splits s on the first unescaped/unquoted occurrence of sep.
+// Returns (whole, "", false) if sep not found.
+func splitFirstUnescaped(s string, sep byte) (left, right string, found bool) {
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if c == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if c == sep && !inSingle && !inDouble {
+			return s[:i], s[i+1:], true
+		}
+	}
+	return s, "", false
+}
+
+// unescapeStr removes backslash escaping and surrounding quotes from a string.
+func unescapeStr(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			b.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		// Strip surrounding quotes
+		if c == '"' || c == '\'' {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// normalizeBind normalizes a bind address: "8080" | ":8080" | "host:8080" → "host:8080"
+func normalizeBind(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	// Already host:port?
+	if strings.Contains(s, ":") {
+		if s[0] == ':' {
+			return "127.0.0.1" + s
+		}
+		return s
+	}
+	// Just a port number
+	return "127.0.0.1:" + s
+}
+
+// normalizeHostPort normalizes host:port|:port|port with a default host
+func normalizeHostPort(s, defaultHost string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	if strings.Contains(s, ":") {
+		if s[0] == ':' {
+			return defaultHost + s
+		}
+		return s
+	}
+	return defaultHost + ":" + s
+}
+
+// normalizeTcpForward converts "listenAddr/targetAddr" into
+// the colon-separated format expected by -L/-R: "bindHost:bindPort:targetHost:targetPort"
+func normalizeTcpForward(spec string) string {
+	parts := strings.SplitN(spec, "/", 2)
+	if len(parts) != 2 {
+		return spec // pass through, will fail later with parse error
+	}
+	listen := normalizeHostPort(parts[0], "127.0.0.1")
+	target := normalizeHostPort(parts[1], "127.0.0.1")
+	// listen = "host:port", target = "host:port"
+	// -L/-R expects "bindHost:bindPort:targetHost:targetPort"
+	return listen + ":" + target
 }
 
 func splitHostPort(s string) (string, int, error) {
