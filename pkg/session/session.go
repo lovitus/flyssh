@@ -105,7 +105,8 @@ func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
 
 	wg.Wait()
 
-	return exitCodeFromError(err), nil
+	code, sessionErr := exitCodeAndError(err)
+	return code, sessionErr
 }
 
 // RunCommand executes a single command on the remote host
@@ -165,7 +166,8 @@ func RunCommand(client *ssh.Client, opts *cli.Options) (int, error) {
 	}
 
 	err = session.Run(opts.Command)
-	return exitCodeFromError(err), nil
+	code, sessionErr := exitCodeAndError(err)
+	return code, sessionErr
 }
 
 func requestPTY(session *ssh.Session, opts *cli.Options) error {
@@ -240,14 +242,18 @@ func setEnvVars(session *ssh.Session, opts *cli.Options) {
 	}
 }
 
-func exitCodeFromError(err error) int {
+// exitCodeAndError returns (exitCode, nil) for clean exits (including
+// ssh.ExitError from the remote command), or (1, err) for connection
+// errors so the caller can trigger reconnect.
+func exitCodeAndError(err error) (int, error) {
 	if err == nil {
-		return 0
+		return 0, nil
 	}
 	if exitErr, ok := err.(*ssh.ExitError); ok {
-		return exitErr.ExitStatus()
+		return exitErr.ExitStatus(), nil
 	}
-	return 1
+	// Connection lost, EOF, etc — propagate so reconnect loop can retry
+	return 1, err
 }
 
 // KeepAlive sends periodic keep-alive requests
