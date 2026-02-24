@@ -325,8 +325,12 @@ func StartLocalForward(client *ssh.Client, spec string, verbose bool) error {
 	}
 	defer listener.Close()
 
+	// Close listener when SSH connection dies so accept loop exits
+	go func() { client.Wait(); listener.Close() }()
+
 	log.Printf("Local forward: %s -> (remote) %s", listener.Addr(), remoteAddr)
 
+	var lastLogTime time.Time
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -336,7 +340,11 @@ func StartLocalForward(client *ssh.Client, spec string, verbose bool) error {
 			defer conn.Close()
 			remote, err := dialOrExec(client, remoteAddr, verbose)
 			if err != nil {
-				log.Printf("Local forward: connect to %s failed: %v", remoteAddr, err)
+				now := time.Now()
+				if now.Sub(lastLogTime) > 2*time.Second {
+					log.Printf("Local forward: connect to %s failed: %v", remoteAddr, err)
+					lastLogTime = now
+				}
 				return
 			}
 			defer remote.Close()
@@ -391,13 +399,15 @@ func StartDynamicForward(client *ssh.Client, spec string, verbose bool) error {
 	}
 	defer listener.Close()
 
+	// Close listener when SSH connection dies
+	go func() { client.Wait(); listener.Close() }()
+
 	log.Printf("Dynamic forward (SOCKS5): listening on %s", listener.Addr())
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("Dynamic forward accept error: %v", err)
-			continue
+			return fmt.Errorf("dynamic accept: %w", err)
 		}
 		go handleSocks5Client(client, conn, verbose)
 	}
