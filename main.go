@@ -137,7 +137,7 @@ func main() {
 	scrubArgs()
 
 	if opts.ShowVersion {
-		fmt.Println("flyssh version 1.0.0 (Go SSH client with SOCKS5 proxy support)")
+		fmt.Println("flyssh version 1.0.1 (Go SSH client with SOCKS5 proxy support)")
 		os.Exit(0)
 	}
 

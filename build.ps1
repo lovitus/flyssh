@@ -1,6 +1,6 @@
 # Cross-compile flyssh for all platforms
 $ErrorActionPreference = "Stop"
-$version = "1.0.0"
+$version = "1.0.1"
 $outDir = "dist"
 $ldflags = "-s -w -X main.Version=$version"
 
