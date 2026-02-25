@@ -120,6 +120,8 @@ func detectRemoteArch(client *ssh.Client) (string, error) {
 		goos = "linux"
 	case strings.Contains(osName, "darwin"):
 		goos = "darwin"
+	case strings.Contains(osName, "freebsd"):
+		goos = "freebsd"
 	}
 
 	goarch := ""
@@ -128,6 +130,10 @@ func detectRemoteArch(client *ssh.Client) (string, error) {
 		goarch = "amd64"
 	case "aarch64", "arm64":
 		goarch = "arm64"
+	case "i386", "i686", "x86":
+		goarch = "386"
+	case "armv6l", "armv7l", "armhf", "arm":
+		goarch = "arm"
 	}
 
 	if goos == "" || goarch == "" {

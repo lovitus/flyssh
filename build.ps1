@@ -11,10 +11,13 @@ New-Item -ItemType Directory -Path $outDir | Out-Null
 $relayDir = "pkg/forwarding/relaybin"
 New-Item -ItemType Directory -Force -Path $relayDir | Out-Null
 $relayTargets = @(
-    @{ GOOS="linux";  GOARCH="amd64" },
-    @{ GOOS="linux";  GOARCH="arm64" },
-    @{ GOOS="darwin"; GOARCH="amd64" },
-    @{ GOOS="darwin"; GOARCH="arm64" }
+    @{ GOOS="linux";   GOARCH="amd64" },
+    @{ GOOS="linux";   GOARCH="arm64" },
+    @{ GOOS="linux";   GOARCH="386" },
+    @{ GOOS="linux";   GOARCH="arm"; GOARM="6" },
+    @{ GOOS="darwin";  GOARCH="amd64" },
+    @{ GOOS="darwin";  GOARCH="arm64" },
+    @{ GOOS="freebsd"; GOARCH="amd64" }
 )
 foreach ($rt in $relayTargets) {
     $rname = "relay-$($rt.GOOS)-$($rt.GOARCH)"
@@ -23,6 +26,7 @@ foreach ($rt in $relayTargets) {
     $env:GOOS = $rt.GOOS
     $env:GOARCH = $rt.GOARCH
     $env:CGO_ENABLED = "0"
+    if ($rt.GOARM) { $env:GOARM = $rt.GOARM } else { Remove-Item Env:\GOARM -ErrorAction SilentlyContinue }
     go build -ldflags "-s -w" -trimpath -o $rpath ./cmd/relay
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAILED: relay $rname" -ForegroundColor Red
