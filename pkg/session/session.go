@@ -54,6 +54,10 @@ func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
 		return 1, fmt.Errorf("stderr pipe: %w", err)
 	}
 
+	// Enable VT processing on stdout (Windows: ANSI escape support)
+	restoreVT := enableVTProcessing()
+	defer restoreVT()
+
 	// Put terminal into raw mode for interactive use
 	var oldState *term.State
 	if !opts.DisableTTY && term.IsTerminal(int(os.Stdin.Fd())) {
@@ -171,17 +175,22 @@ func RunCommand(client *ssh.Client, opts *cli.Options) (int, error) {
 }
 
 func requestPTY(session *ssh.Session, opts *cli.Options) error {
-	// Get terminal size
+	// Get terminal size — use Stdout on Windows (GetConsoleScreenBufferInfo
+	// requires an OUTPUT handle; Stdin is an INPUT handle).
 	width, height := 80, 24
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		w, h, err := term.GetSize(int(os.Stdin.Fd()))
-		if err == nil {
-			width, height = w, h
+	for _, fd := range []int{int(os.Stdout.Fd()), int(os.Stdin.Fd())} {
+		if term.IsTerminal(fd) {
+			if w, h, err := term.GetSize(fd); err == nil {
+				width, height = w, h
+				break
+			}
 		}
 	}
 
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          1,
+		ssh.OPOST:         1, // enable output processing
+		ssh.ONLCR:         1, // map NL to CR-NL on output
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
@@ -195,17 +204,22 @@ func requestPTY(session *ssh.Session, opts *cli.Options) error {
 }
 
 func handleWindowResize(session *ssh.Session) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return
+	// Use Stdout for GetSize (Windows needs OUTPUT handle)
+	fd := int(os.Stdout.Fd())
+	if !term.IsTerminal(fd) {
+		fd = int(os.Stdin.Fd())
+		if !term.IsTerminal(fd) {
+			return
+		}
 	}
 
 	// Poll-based window resize detection (cross-platform)
-	prevW, prevH, _ := term.GetSize(int(os.Stdin.Fd()))
+	prevW, prevH, _ := term.GetSize(fd)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		w, h, err := term.GetSize(int(os.Stdin.Fd()))
+		w, h, err := term.GetSize(fd)
 		if err != nil {
 			continue
 		}
