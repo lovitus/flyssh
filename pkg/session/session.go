@@ -2,10 +2,8 @@ package session
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/flyssh/flyssh/pkg/cli"
@@ -37,22 +35,9 @@ func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
 			return 1, fmt.Errorf("request pty: %w", err)
 		}
 	}
-
-	// Connect stdin/stdout/stderr
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		return 1, fmt.Errorf("stdin pipe: %w", err)
-	}
-
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		return 1, fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	stderr, err := session.StderrPipe()
-	if err != nil {
-		return 1, fmt.Errorf("stderr pipe: %w", err)
-	}
+	session.Stdin = os.Stdin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
 
 	// Enable VT processing on stdout (Windows: ANSI escape support)
 	restoreVT := enableVTProcessing()
@@ -76,29 +61,11 @@ func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
 	}
 
 	// Handle window size changes
+	stopResize := make(chan struct{})
+	defer close(stopResize)
 	if !opts.DisableTTY {
-		go handleWindowResize(session)
+		go handleWindowResize(session, stopResize)
 	}
-
-	// Copy I/O
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(stdin, os.Stdin)
-		stdin.Close()
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.Copy(os.Stdout, stdout)
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.Copy(os.Stderr, stderr)
-	}()
 
 	err = session.Wait()
 
@@ -106,8 +73,6 @@ func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
 	if oldState != nil {
 		term.Restore(int(os.Stdin.Fd()), oldState)
 	}
-
-	wg.Wait()
 
 	code, sessionErr := exitCodeAndError(err)
 	return code, sessionErr
@@ -152,7 +117,9 @@ func RunCommand(client *ssh.Client, opts *cli.Options) (int, error) {
 		}
 
 		// Handle window resize
-		go handleWindowResize(session)
+		stopResize := make(chan struct{})
+		defer close(stopResize)
+		go handleWindowResize(session, stopResize)
 	}
 
 	// Connect I/O
@@ -203,7 +170,7 @@ func requestPTY(session *ssh.Session, opts *cli.Options) error {
 	return session.RequestPty(termType, height, width, modes)
 }
 
-func handleWindowResize(session *ssh.Session) {
+func handleWindowResize(session *ssh.Session, stop <-chan struct{}) {
 	// Use Stdout for GetSize (Windows needs OUTPUT handle)
 	fd := int(os.Stdout.Fd())
 	if !term.IsTerminal(fd) {
@@ -218,14 +185,19 @@ func handleWindowResize(session *ssh.Session) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		w, h, err := term.GetSize(fd)
-		if err != nil {
-			continue
-		}
-		if w != prevW || h != prevH {
-			session.WindowChange(h, w)
-			prevW, prevH = w, h
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			w, h, err := term.GetSize(fd)
+			if err != nil {
+				continue
+			}
+			if w != prevW || h != prevH {
+				session.WindowChange(h, w)
+				prevW, prevH = w, h
+			}
 		}
 	}
 }

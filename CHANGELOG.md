@@ -1,5 +1,14 @@
 # Changelog / 更新日志
 
+## v1.0.3 (2026-03-04)
+
+### Bug Fixes / 修复
+
+- **Interactive auto-reconnect no longer waits for Enter** — on connection loss, reconnect now starts immediately without requiring keyboard input; channels recover automatically / 交互模式断线后无需再按回车触发重连，自动重连会立即启动并恢复通道
+- **Stop terminal resize watcher on session end** — avoids goroutine leaks across repeated reconnects / 会话结束时停止终端尺寸监听，避免反复重连导致协程泄漏
+
+---
+
 ## v1.0.1 (2026-02-24)
 
 ### Bug Fixes / 修复

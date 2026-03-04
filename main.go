@@ -22,6 +22,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+var Version = "1.0.3"
+
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
 // NOTE: This only scrubs Go's copy of argv. Shell history is recorded BEFORE
@@ -137,7 +139,7 @@ func main() {
 	scrubArgs()
 
 	if opts.ShowVersion {
-		fmt.Println("flyssh version 1.0.1 (Go SSH client with SOCKS5 proxy support)")
+		fmt.Printf("flyssh version %s (Go SSH client with SOCKS5 proxy support)\n", Version)
 		os.Exit(0)
 	}
 
