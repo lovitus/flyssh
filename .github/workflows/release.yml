@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v1.0.4)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          TAG="${TAG#refs/tags/}"
+          if [[ -z "${TAG}" ]]; then
+            echo "Tag is empty" >&2
+            exit 1
+          fi
+          if [[ "${TAG}" != v* ]]; then
+            echo "Tag must start with v (got: ${TAG})" >&2
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          OUT_DIR="dist/${TAG}"
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "out_dir=${OUT_DIR}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build embedded relay binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          relay_dir="pkg/forwarding/relaybin"
+          mkdir -p "${relay_dir}"
+
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "linux 386"
+            "linux arm 6"
+            "darwin amd64"
+            "darwin arm64"
+            "freebsd amd64"
+          )
+
+          for t in "${targets[@]}"; do
+            read -r goos goarch goarm <<<"${t}"
+            name="relay-${goos}-${goarch}"
+
+            echo "Building ${name}"
+            if [[ -n "${goarm:-}" ]]; then
+              GOOS="${goos}" GOARCH="${goarch}" GOARM="${goarm}" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "-s -w" -o "${relay_dir}/${name}" ./cmd/relay
+            else
+              GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "-s -w" -o "${relay_dir}/${name}" ./cmd/relay
+            fi
+
+            gzip -9 -c "${relay_dir}/${name}" > "${relay_dir}/${name}.gz"
+            rm -f "${relay_dir}/${name}"
+          done
+
+      - name: Build release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.meta.outputs.version }}"
+          out_dir="${{ steps.meta.outputs.out_dir }}"
+          mkdir -p "${out_dir}"
+
+          ldflags="-s -w -X main.Version=${version}"
+
+          targets=(
+            "windows amd64 exe"
+            "windows arm64 exe"
+            "linux amd64"
+            "linux arm64"
+            "linux 386"
+            "linux arm 6"
+            "darwin amd64"
+            "darwin arm64"
+            "freebsd amd64"
+          )
+
+          for t in "${targets[@]}"; do
+            read -r goos goarch ext goarm <<<"${t}"
+            ext="${ext:-}"
+
+            name="flyssh-${version}-${goos}-${goarch}"
+            bin_path="${out_dir}/${name}"
+            if [[ "${ext}" == "exe" ]]; then
+              bin_path="${bin_path}.exe"
+            fi
+
+            echo "Building ${bin_path}"
+            if [[ -n "${goarm:-}" ]]; then
+              GOOS="${goos}" GOARCH="${goarch}" GOARM="${goarm}" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "${ldflags}" -o "${bin_path}" .
+            else
+              GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "${ldflags}" -o "${bin_path}" .
+            fi
+
+            if [[ "${goos}" == "windows" ]]; then
+              (cd "${out_dir}" && zip -q "${name}.exe.zip" "${name}.exe")
+              rm -f "${bin_path}"
+            else
+              (cd "${out_dir}" && tar -czf "${name}.tar.gz" "${name}")
+              rm -f "${bin_path}"
+            fi
+          done
+
+          (
+            cd "${out_dir}"
+            sha256sum *.tar.gz *.zip > checksums.txt
+          )
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.meta.outputs.out_dir }}/*.tar.gz
+            ${{ steps.meta.outputs.out_dir }}/*.zip
+            ${{ steps.meta.outputs.out_dir }}/checksums.txt
+          generate_release_notes: true
+          prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
