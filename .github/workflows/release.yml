@@ -58,9 +58,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Test
-        run: go test ./...
-
       - name: Build embedded relay binaries
         shell: bash
         run: |
@@ -95,6 +92,9 @@ jobs:
             gzip -9 -c "${relay_dir}/${name}" > "${relay_dir}/${name}.gz"
             rm -f "${relay_dir}/${name}"
           done
+
+      - name: Test
+        run: go test ./...
 
       - name: Build release artifacts
         shell: bash
