@@ -1,5 +1,22 @@
 # Changelog / 更新日志
 
+## v1.0.5 (2026-03-25)
+
+### Bug Fixes / 修复
+
+- **Fix interactive input freeze after repeated reconnects** — interactive sessions now use a process-level single stdin reader with active-session routing, preventing stale readers from previous sessions from swallowing keyboard input after long-running reconnect loops / 修复重连多轮后的交互输入冻结：交互模式改为进程级单一 stdin 读取并路由到当前会话，避免旧会话残留读取器吞掉按键
+- **Reduce key-loss window on reconnect** — stdin routing is bound before `session.Shell()` starts so the first keystrokes after reconnect are not dropped during shell startup / 缩小重连后首键丢失窗口：在 `session.Shell()` 前绑定 stdin 路由，降低 shell 启动瞬间按键丢失概率
+
+### CI / Release
+
+- **GitHub Actions release pipeline added** — pushing a `v*` tag now runs tests, cross-builds all supported targets, packages artifacts, generates checksums, and publishes assets to GitHub Releases / 新增 GitHub Actions 发布流水线：推送 `v*` 标签即可自动测试、全平台构建、打包、生成校验并上传到 Releases
+
+### Verification / 验证
+
+- Build validation: `go test ./...` and `go build ./...` passed on release branch / 发布分支已通过 `go test ./...` 与 `go build ./...`
+
+---
+
 ## v1.0.4 (2026-03-25)
 
 ### Bug Fixes / 修复

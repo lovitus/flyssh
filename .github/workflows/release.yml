@@ -152,6 +152,32 @@ jobs:
             sha256sum *.tar.gz *.zip > checksums.txt
           )
 
+      - name: Prepare release notes from changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.meta.outputs.version }}"
+          section_header="## v${version}"
+
+          awk -v hdr="${section_header}" '
+            BEGIN { in_section=0 }
+            $0 ~ /^## / {
+              if (in_section) exit
+              if ($0 == hdr || index($0, hdr " ") == 1) {
+                in_section=1
+                print
+                next
+              }
+            }
+            in_section { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+
+          if [[ ! -s RELEASE_NOTES.md ]]; then
+            echo "No changelog section found for ${section_header}" >&2
+            exit 1
+          fi
+
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
@@ -161,5 +187,5 @@ jobs:
             ${{ steps.meta.outputs.out_dir }}/*.tar.gz
             ${{ steps.meta.outputs.out_dir }}/*.zip
             ${{ steps.meta.outputs.out_dir }}/checksums.txt
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
