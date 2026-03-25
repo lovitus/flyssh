@@ -2,14 +2,68 @@ package session
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/flyssh/flyssh/pkg/cli"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
+
+var globalStdinRouter stdinRouter
+
+// stdinRouter keeps a single reader on os.Stdin for the entire process and
+// routes bytes to the currently active interactive SSH session.
+type stdinRouter struct {
+	mu     sync.RWMutex
+	writer io.WriteCloser
+	once   sync.Once
+}
+
+func (r *stdinRouter) loop() {
+	buf := make([]byte, 4096)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if n > 0 {
+			r.mu.RLock()
+			w := r.writer
+			r.mu.RUnlock()
+			if w != nil {
+				if _, werr := w.Write(buf[:n]); werr != nil {
+					r.mu.Lock()
+					if r.writer == w {
+						r.writer = nil
+					}
+					r.mu.Unlock()
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (r *stdinRouter) bind(w io.WriteCloser) func() {
+	r.once.Do(func() {
+		go r.loop()
+	})
+
+	r.mu.Lock()
+	r.writer = w
+	r.mu.Unlock()
+
+	return func() {
+		r.mu.Lock()
+		if r.writer == w {
+			r.writer = nil
+		}
+		r.mu.Unlock()
+	}
+}
 
 // RunInteractiveShell starts an interactive shell session
 func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
@@ -35,9 +89,13 @@ func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
 			return 1, fmt.Errorf("request pty: %w", err)
 		}
 	}
-	session.Stdin = os.Stdin
 	session.Stdout = os.Stdout
 	session.Stderr = os.Stderr
+
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return 1, fmt.Errorf("stdin pipe: %w", err)
+	}
 
 	// Enable VT processing on stdout (Windows: ANSI escape support)
 	restoreVT := enableVTProcessing()
@@ -51,6 +109,9 @@ func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
 			log.Printf("Warning: could not set raw terminal: %v", err)
 		}
 	}
+
+	releaseStdin := globalStdinRouter.bind(stdin)
+	defer releaseStdin()
 
 	// Start shell
 	if err := session.Shell(); err != nil {

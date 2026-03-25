@@ -1,5 +1,13 @@
 # Changelog / 更新日志
 
+## v1.0.4 (2026-03-25)
+
+### Bug Fixes / 修复
+
+- **Fix interactive input freeze after reconnect loops** — use a single process-level stdin router for interactive shell sessions, so repeated reconnects no longer leave stale input readers that can swallow keystrokes / 修复交互重连多轮后输入失效：改为进程级单一 stdin 路由，避免旧会话残留读取导致按键被吞
+
+---
+
 ## v1.0.3 (2026-03-04)
 
 ### Bug Fixes / 修复
