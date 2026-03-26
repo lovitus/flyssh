@@ -206,6 +206,37 @@ flyssh user:password@hostname --no-reconnect
 flyssh user:password@hostname --reconnect-delay 10
 ```
 
+### Reconnect Semantics / 重连语义
+
+- In interactive shell mode, reconnect creates a fresh shell session.  
+  交互 shell 模式下，重连后会创建新的 shell 会话。
+- In command mode (`flyssh host "cmd"`), a reconnect re-runs the command.  
+  命令模式（`flyssh host "cmd"`）下，重连会重新执行该命令。
+- If you need strict one-shot command behavior, disable reconnect with `--no-reconnect`.  
+  如果命令必须严格“一次执行”，请加 `--no-reconnect`。
+
+### Troubleshooting Logs / 排障日志
+
+Use `-v` for detailed forwarding/reconnect traces:
+
+使用 `-v` 获取详细转发/重连日志：
+
+```bash
+flyssh -v user:pass@host -L 127.0.0.1:8080:10.0.0.10:80
+```
+
+Log lines now include per-connection trace IDs for forwarding paths:
+
+日志现在为转发路径增加了每连接 trace id：
+
+- `L-000123` for local forward flow
+- `R-000456` for remote forward flow
+- `D-000789` for dynamic SOCKS flow
+
+This makes it easier to correlate accept/connect/failure events for the same forwarded connection.
+
+这可以把同一条转发连接的 accept/connect/failure 事件串起来看。
+
 ### Jump Hosts (ProxyJump) / 跳板机
 
 ```bash
@@ -314,6 +345,42 @@ Host myserver
 ```bash
 flyssh --socks 127.0.0.1:1080 myserver
 ```
+
+---
+
+## Testing / 测试
+
+Run full local test suite:
+
+运行本地全量测试：
+
+```bash
+go test ./...
+```
+
+Race detector (recommended before release):
+
+竞态检测（发布前建议跑）：
+
+```bash
+go test -race ./...
+```
+
+Stability repeat run:
+
+稳定性重复运行：
+
+```bash
+go test ./... -count=5
+```
+
+CI now runs:
+
+CI 现在会执行：
+
+- Normal test suite / 常规测试
+- Race detector / 竞态检测
+- Repeated run for flake detection / 重复运行检测偶发失败
 
 ---
 

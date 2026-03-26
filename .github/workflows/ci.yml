@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build embedded relay binaries (required by go:embed tests)
+        shell: bash
+        run: |
+          set -euo pipefail
+          relay_dir="pkg/forwarding/relaybin"
+          mkdir -p "${relay_dir}"
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "linux 386"
+            "linux arm 6"
+            "darwin amd64"
+            "darwin arm64"
+            "freebsd amd64"
+          )
+          for t in "${targets[@]}"; do
+            read -r goos goarch goarm <<<"${t}"
+            name="relay-${goos}-${goarch}"
+            if [[ -n "${goarm:-}" ]]; then
+              GOOS="${goos}" GOARCH="${goarch}" GOARM="${goarm}" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "-s -w" -o "${relay_dir}/${name}" ./cmd/relay
+            else
+              GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "-s -w" -o "${relay_dir}/${name}" ./cmd/relay
+            fi
+            gzip -9 -c "${relay_dir}/${name}" > "${relay_dir}/${name}.gz"
+            rm -f "${relay_dir}/${name}"
+          done
+
+      - name: Test suite
+        run: go test ./...
+
+      - name: Race detector
+        run: go test -race ./...
+
+      - name: Repeat stability check
+        run: go test ./... -count=5

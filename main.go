@@ -163,7 +163,9 @@ func main() {
 	}()
 
 	firstAttempt := true
+	reconnectAttempt := 0
 	for {
+		cycleStarted := time.Now()
 		exitCode, sessionErr := runOnce(opts)
 
 		if sessionErr == nil {
@@ -179,8 +181,9 @@ func main() {
 		}
 
 		firstAttempt = false
-		fmt.Fprintf(os.Stderr, "\nflyssh: connection lost: %v\n", sessionErr)
-		fmt.Fprintf(os.Stderr, "flyssh: reconnecting in %v...\n", reconnectDelay)
+		reconnectAttempt++
+		fmt.Fprintf(os.Stderr, "\nflyssh: connection lost after %s: %v\n", time.Since(cycleStarted).Truncate(time.Millisecond), sessionErr)
+		fmt.Fprintf(os.Stderr, "flyssh: reconnect attempt #%d in %v...\n", reconnectAttempt, reconnectDelay)
 		time.Sleep(reconnectDelay)
 	}
 }

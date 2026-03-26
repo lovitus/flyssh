@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -50,7 +51,13 @@ var (
 
 	// sessionSem limits concurrent SSH exec sessions to stay under MaxSessions.
 	sessionSem = make(chan struct{}, 8)
+	traceSeq   atomic.Uint64
 )
+
+func newTraceID(prefix string) string {
+	id := traceSeq.Add(1)
+	return fmt.Sprintf("%s-%06d", prefix, id)
+}
 
 func getClientState(client *ssh.Client) *clientState {
 	clientStatesMu.Lock()
@@ -113,7 +120,7 @@ func buildRelayCmds(host, port string) []relayCmd {
 // Tries direct-tcpip → mux relay → per-session exec relays.
 // Safe for concurrent use from any goroutine and any hop.
 func DialTCP(client *ssh.Client, addr string, verbose bool) (net.Conn, error) {
-	return dialOrExec(client, addr, verbose)
+	return dialOrExecWithTrace(client, addr, verbose, "")
 }
 
 // getOrCreateMuxDialer returns the per-client MuxDialer, creating it if needed.
@@ -138,6 +145,10 @@ func getOrCreateMuxDialer(client *ssh.Client, cs *clientState, verbose bool) (*M
 // dialOrExec tries direct-tcpip → mux relay → per-session exec relays.
 // All state is per-client so each hop in a chain is independent.
 func dialOrExec(client *ssh.Client, addr string, verbose bool) (net.Conn, error) {
+	return dialOrExecWithTrace(client, addr, verbose, "")
+}
+
+func dialOrExecWithTrace(client *ssh.Client, addr string, verbose bool, traceID string) (net.Conn, error) {
 	cs := getClientState(client)
 
 	// 1) Try direct-tcpip (fastest, standard SSH forwarding)
@@ -151,7 +162,17 @@ func dialOrExec(client *ssh.Client, addr string, verbose bool) (net.Conn, error)
 			return wrapIdleConn(conn, DefaultIdleTimeout), nil
 		}
 		if !strings.Contains(err.Error(), "administratively prohibited") {
+			if verbose && traceID != "" {
+				log.Printf("[%s] direct-tcpip dial %s failed: %v", traceID, addr, err)
+			}
 			return nil, err
+		}
+		if verbose {
+			if traceID != "" {
+				log.Printf("[%s] direct-tcpip blocked for %s, switching to relay mode", traceID, addr)
+			} else {
+				log.Printf("direct-tcpip blocked for %s, switching to relay mode", addr)
+			}
 		}
 		cs.mu.Lock()
 		cs.directTCPBlocked = true
@@ -169,10 +190,18 @@ func dialOrExec(client *ssh.Client, addr string, verbose bool) (net.Conn, error)
 			return wrapIdleConn(conn, DefaultIdleTimeout), nil
 		}
 		if verbose {
-			log.Printf("Mux dial %s: %v", addr, dialErr)
+			if traceID != "" {
+				log.Printf("[%s] mux dial %s failed: %v", traceID, addr, dialErr)
+			} else {
+				log.Printf("Mux dial %s: %v", addr, dialErr)
+			}
 		}
 	} else if verbose {
-		log.Printf("Mux dialer init: %v", muxErr)
+		if traceID != "" {
+			log.Printf("[%s] mux dialer init failed: %v", traceID, muxErr)
+		} else {
+			log.Printf("Mux dialer init: %v", muxErr)
+		}
 	}
 
 	// 3) Fallback: per-connection exec relays (with semaphore + retry)
@@ -330,26 +359,33 @@ func StartLocalForward(client *ssh.Client, spec string, verbose bool) error {
 
 	log.Printf("Local forward: %s -> (remote) %s", listener.Addr(), remoteAddr)
 
-	var lastLogTime time.Time
+	var lastFailLogUnix atomic.Int64
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return fmt.Errorf("accept: %w", err)
 		}
-		go func() {
+		traceID := newTraceID("L")
+		if verbose {
+			log.Printf("[%s] local forward accepted %s -> %s", traceID, conn.RemoteAddr(), remoteAddr)
+		}
+		go func(traceID string) {
 			defer conn.Close()
-			remote, err := dialOrExec(client, remoteAddr, verbose)
+			remote, err := dialOrExecWithTrace(client, remoteAddr, verbose, traceID)
 			if err != nil {
-				now := time.Now()
-				if now.Sub(lastLogTime) > 2*time.Second {
-					log.Printf("Local forward: connect to %s failed: %v", remoteAddr, err)
-					lastLogTime = now
+				now := time.Now().UnixNano()
+				prev := lastFailLogUnix.Load()
+				if now-prev > int64(2*time.Second) && lastFailLogUnix.CompareAndSwap(prev, now) {
+					log.Printf("[%s] local forward connect to %s failed: %v", traceID, remoteAddr, err)
 				}
 				return
 			}
 			defer remote.Close()
+			if verbose {
+				log.Printf("[%s] local forward connected to %s", traceID, remoteAddr)
+			}
 			biCopy(conn, remote)
-		}()
+		}(traceID)
 	}
 }
 
@@ -373,16 +409,23 @@ func StartRemoteForward(client *ssh.Client, spec string, verbose bool) error {
 		if err != nil {
 			return fmt.Errorf("remote accept: %w", err)
 		}
-		go func() {
+		traceID := newTraceID("R")
+		if verbose {
+			log.Printf("[%s] remote forward accepted %s -> %s", traceID, conn.RemoteAddr(), localAddr)
+		}
+		go func(traceID string) {
 			defer conn.Close()
 			local, err := net.Dial("tcp", localAddr)
 			if err != nil {
-				log.Printf("Remote forward: dial local %s failed: %v", localAddr, err)
+				log.Printf("[%s] remote forward dial local %s failed: %v", traceID, localAddr, err)
 				return
 			}
 			defer local.Close()
+			if verbose {
+				log.Printf("[%s] remote forward connected to local %s", traceID, localAddr)
+			}
 			biCopy(conn, local)
-		}()
+		}(traceID)
 	}
 }
 
@@ -409,11 +452,12 @@ func StartDynamicForward(client *ssh.Client, spec string, verbose bool) error {
 		if err != nil {
 			return fmt.Errorf("dynamic accept: %w", err)
 		}
-		go handleSocks5Client(client, conn, verbose)
+		traceID := newTraceID("D")
+		go handleSocks5Client(client, conn, verbose, traceID)
 	}
 }
 
-func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool) {
+func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool, traceID string) {
 	defer conn.Close()
 
 	// SOCKS5 handshake
@@ -421,9 +465,15 @@ func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool) {
 	buf := make([]byte, 258)
 	n, err := conn.Read(buf)
 	if err != nil || n < 2 {
+		if verbose && err != nil {
+			log.Printf("[%s] dynamic forward handshake read failed: %v", traceID, err)
+		}
 		return
 	}
 	if buf[0] != 0x05 {
+		if verbose {
+			log.Printf("[%s] dynamic forward rejected non-socks5 client", traceID)
+		}
 		return
 	}
 
@@ -433,11 +483,17 @@ func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool) {
 	// Read connect request
 	n, err = conn.Read(buf)
 	if err != nil || n < 7 {
+		if verbose && err != nil {
+			log.Printf("[%s] dynamic forward request read failed: %v", traceID, err)
+		}
 		return
 	}
 	if buf[0] != 0x05 || buf[1] != 0x01 {
 		// Only CONNECT supported
 		conn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		if verbose {
+			log.Printf("[%s] dynamic forward rejected command: ver=%d cmd=%d", traceID, buf[0], buf[1])
+		}
 		return
 	}
 
@@ -471,6 +527,9 @@ func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool) {
 		addrEnd = 22
 	default:
 		conn.Write([]byte{0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		if verbose {
+			log.Printf("[%s] dynamic forward rejected unsupported address type: %d", traceID, addrType)
+		}
 		return
 	}
 	_ = addrEnd
@@ -478,13 +537,13 @@ func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool) {
 	targetAddr := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
 
 	if verbose {
-		log.Printf("Dynamic forward: CONNECT %s", targetAddr)
+		log.Printf("[%s] dynamic forward CONNECT %s", traceID, targetAddr)
 	}
 
 	// Dial through SSH (with exec fallback)
-	remote, err := dialOrExec(client, targetAddr, verbose)
+	remote, err := dialOrExecWithTrace(client, targetAddr, verbose, traceID)
 	if err != nil {
-		log.Printf("Dynamic forward: connect to %s failed: %v", targetAddr, err)
+		log.Printf("[%s] dynamic forward connect to %s failed: %v", traceID, targetAddr, err)
 		conn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
