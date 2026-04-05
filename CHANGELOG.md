@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## v1.0.12 (2026-04-06)
+
+### Bug Fixes / 修复
+
+- **Remove OS socket timing from prompt broker cleanup tests** — the abandoned-prompt cleanup test now uses an in-memory single-connection listener instead of real TCP/Unix sockets, eliminating GitHub runner-specific timing differences that could still leave release CI hanging / 移除 prompt broker cleanup 测试对 OS socket 时序的依赖：abandoned-prompt cleanup 测试现在改用内存内单连接 listener，而不再依赖真实 TCP/Unix socket，消除了 GitHub runner 上可能继续导致 release CI 卡住的平台时序差异
+
+### Verification / 验证
+
+- `go test ./pkg/auth -run TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt -count=100`
+- `go test -race ./pkg/auth -run TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt -count=50`
+- `go test ./...`
+
+---
+
 ## v1.0.11 (2026-04-06)
 
 ### Bug Fixes / 修复

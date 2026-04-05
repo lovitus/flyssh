@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,9 +165,18 @@ func TestPromptBrokerProvidesPromptInput(t *testing.T) {
 }
 
 func TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt(t *testing.T) {
+	oldListenerFactory := promptBrokerListenerFactory
 	oldBrokerLineReader := brokerPromptLineReader
 	workerStarted := make(chan struct{})
 	workerDone := make(chan struct{})
+	serverConn, clientConn := net.Pipe()
+	promptBrokerListenerFactory = func() (string, net.Listener, func(), error) {
+		return "pipe", &singleConnListener{
+			connCh:  chanWithConn(serverConn),
+			closeCh: make(chan struct{}),
+			addr:    dummyAddr("prompt-broker-test"),
+		}, func() {}, nil
+	}
 	brokerPromptLineReader = func(cancel <-chan struct{}) (string, error) {
 		close(workerStarted)
 		<-cancel
@@ -174,6 +184,8 @@ func TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt(t *testing.T) {
 		return "", nil
 	}
 	defer func() {
+		_ = clientConn.Close()
+		promptBrokerListenerFactory = oldListenerFactory
 		select {
 		case <-workerDone:
 		case <-time.After(2 * time.Second):
@@ -196,12 +208,8 @@ func TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt(t *testing.T) {
 		values[parts[0]] = parts[1]
 	}
 
-	conn, err := net.Dial(values[PromptBrokerNetworkEnv], values[PromptBrokerAddrEnv])
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
 	req := promptBrokerRequest{Token: values[PromptBrokerTokenEnv], Op: "line"}
-	if err := json.NewEncoder(conn).Encode(req); err != nil {
+	if err := json.NewEncoder(clientConn).Encode(req); err != nil {
 		t.Fatalf("Encode request: %v", err)
 	}
 
@@ -210,7 +218,7 @@ func TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("prompt worker did not start")
 	}
-	_ = conn.Close()
+	_ = clientConn.Close()
 
 	done := make(chan struct{})
 	go func() {
@@ -224,3 +232,46 @@ func TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt(t *testing.T) {
 		t.Fatal("cleanup did not return after abandoned prompt")
 	}
 }
+
+func chanWithConn(conn net.Conn) chan net.Conn {
+	ch := make(chan net.Conn, 1)
+	ch <- conn
+	return ch
+}
+
+type singleConnListener struct {
+	connCh  chan net.Conn
+	closeCh chan struct{}
+	addr    net.Addr
+	once    sync.Once
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.connCh:
+		if conn == nil {
+			return nil, net.ErrClosed
+		}
+		return conn, nil
+	case <-l.closeCh:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *singleConnListener) Close() error {
+	l.once.Do(func() {
+		close(l.closeCh)
+		close(l.connCh)
+	})
+	return nil
+}
+
+func (l *singleConnListener) Addr() net.Addr {
+	return l.addr
+}
+
+type dummyAddr string
+
+func (a dummyAddr) Network() string { return string(a) }
+
+func (a dummyAddr) String() string { return string(a) }
