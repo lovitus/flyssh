@@ -165,14 +165,20 @@ func TestPromptBrokerProvidesPromptInput(t *testing.T) {
 
 func TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt(t *testing.T) {
 	oldBrokerLineReader := brokerPromptLineReader
+	workerStarted := make(chan struct{})
 	workerDone := make(chan struct{})
 	brokerPromptLineReader = func(cancel <-chan struct{}) (string, error) {
+		close(workerStarted)
 		<-cancel
 		close(workerDone)
 		return "", nil
 	}
 	defer func() {
-		<-workerDone
+		select {
+		case <-workerDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("prompt worker did not exit")
+		}
 		brokerPromptLineReader = oldBrokerLineReader
 	}()
 
@@ -197,6 +203,12 @@ func TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt(t *testing.T) {
 	req := promptBrokerRequest{Token: values[PromptBrokerTokenEnv], Op: "line"}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		t.Fatalf("Encode request: %v", err)
+	}
+
+	select {
+	case <-workerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt worker did not start")
 	}
 	_ = conn.Close()
 

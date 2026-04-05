@@ -94,7 +94,7 @@ jobs:
           done
 
       - name: Test
-        run: go test ./...
+        run: go test -v ./...
 
       - name: Build release artifacts
         shell: bash

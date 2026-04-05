@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.11 (2026-04-06)
+
+### Bug Fixes / 修复
+
+- **Stabilize prompt broker cleanup test in CI** — the abandoned-prompt cleanup test now waits for the broker worker to actually start before simulating disconnect, and its deferred worker shutdown wait is bounded so GitHub Actions no longer burns the full package timeout on a missed synchronization edge / 稳定 CI 中的 prompt broker cleanup 测试：abandoned-prompt 清理测试现在会先等待 broker worker 真正启动再模拟断连，并为 defer 中的 worker 退出等待增加超时，避免 GitHub Actions 在同步边界没对齐时耗尽整个包级超时
+- **Make release test logs package/test visible** — the release workflow now runs `go test -v ./...` so if CI ever stalls or fails again, the last running package and test case are visible directly in the Actions log / 提升 release 测试日志可诊断性：release workflow 现在改为执行 `go test -v ./...`，后续若 CI 再次卡住或失败，可以直接从 Actions 日志看到最后执行到的包和测试用例
+
+### Verification / 验证
+
+- `go test ./pkg/auth -run TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt -count=20`
+- `go test ./pkg/auth`
+- `go test -race ./pkg/auth`
+- `go test ./...`
+
+---
+
 ## v1.0.10 (2026-04-06)
 
 ### Bug Fixes / 修复
