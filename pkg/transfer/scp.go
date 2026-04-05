@@ -15,15 +15,23 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 )
+
+var scpStatusWriter io.Writer = os.Stderr
+var scpStatusWriterIsTerminal = func(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
+}
 
 func runSCP(client *ssh.Client, spec *Spec) (int, error) {
 	cfg := parseSCPFlags(spec.Flags)
+	reporter := newSCPReporter(spec, cfg)
 	switch spec.Direction {
 	case DirectionUpload:
-		return scpUpload(client, spec, cfg)
+		return scpUpload(client, spec, cfg, reporter)
 	case DirectionDownload:
-		return scpDownload(client, spec, cfg)
+		return scpDownload(client, spec, cfg, reporter)
 	default:
 		return 1, fmt.Errorf("unsupported scp direction: %s", spec.Direction)
 	}
@@ -32,6 +40,7 @@ func runSCP(client *ssh.Client, spec *Spec) (int, error) {
 type scpConfig struct {
 	recursive bool
 	preserve  bool
+	quiet     bool
 }
 
 func parseSCPFlags(flags []string) scpConfig {
@@ -46,13 +55,15 @@ func parseSCPFlags(flags []string) scpConfig {
 				cfg.recursive = true
 			case 'p':
 				cfg.preserve = true
+			case 'q':
+				cfg.quiet = true
 			}
 		}
 	}
 	return cfg
 }
 
-func scpUpload(client *ssh.Client, spec *Spec, cfg scpConfig) (int, error) {
+func scpUpload(client *ssh.Client, spec *Spec, cfg scpConfig, reporter *scpReporter) (int, error) {
 	if err := validateUploadSources(spec.Sources, cfg); err != nil {
 		return 1, err
 	}
@@ -87,8 +98,9 @@ func scpUpload(client *ssh.Client, spec *Spec, cfg scpConfig) (int, error) {
 		return finishSession(session, stderr.String(), fmt.Errorf("scp upload handshake: %w", err))
 	}
 
+	reporter.start()
 	for _, source := range spec.Sources {
-		if err := sendLocalPath(writer, reader, source, cfg); err != nil {
+		if err := sendLocalPath(writer, reader, source, cfg, reporter); err != nil {
 			_ = stdin.Close()
 			return finishSession(session, stderr.String(), err)
 		}
@@ -100,10 +112,14 @@ func scpUpload(client *ssh.Client, spec *Spec, cfg scpConfig) (int, error) {
 	if err := stdin.Close(); err != nil {
 		return finishSession(session, stderr.String(), fmt.Errorf("close scp upload stream: %w", err))
 	}
-	return finishSession(session, stderr.String(), nil)
+	code, err := finishSession(session, stderr.String(), nil)
+	if isTransferSuccess(code, err) {
+		reporter.finish()
+	}
+	return code, err
 }
 
-func scpDownload(client *ssh.Client, spec *Spec, cfg scpConfig) (int, error) {
+func scpDownload(client *ssh.Client, spec *Spec, cfg scpConfig, reporter *scpReporter) (int, error) {
 	if len(spec.Sources) > 1 {
 		info, err := os.Stat(spec.Target)
 		if err != nil || !info.IsDir() {
@@ -111,15 +127,18 @@ func scpDownload(client *ssh.Client, spec *Spec, cfg scpConfig) (int, error) {
 		}
 	}
 
+	reporter.start()
 	for _, source := range spec.Sources {
-		if code, err := scpDownloadOne(client, source, spec.Target, len(spec.Sources) > 1, cfg); err != nil {
+		code, err := scpDownloadOne(client, source, spec.Target, len(spec.Sources) > 1, cfg, reporter)
+		if !isTransferSuccess(code, err) {
 			return code, err
 		}
 	}
+	reporter.finish()
 	return 0, nil
 }
 
-func scpDownloadOne(client *ssh.Client, remoteSource, localTarget string, forceDir bool, cfg scpConfig) (int, error) {
+func scpDownloadOne(client *ssh.Client, remoteSource, localTarget string, forceDir bool, cfg scpConfig, reporter *scpReporter) (int, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return 1, fmt.Errorf("create scp download session: %w", err)
@@ -153,7 +172,7 @@ func scpDownloadOne(client *ssh.Client, remoteSource, localTarget string, forceD
 		_ = stdin.Close()
 		return finishSession(session, stderr.String(), err)
 	}
-	if err := receiveIntoRoot(reader, writer, root, cfg); err != nil {
+	if err := receiveIntoRoot(reader, writer, root, cfg, reporter); err != nil {
 		_ = stdin.Close()
 		if !cfg.recursive && strings.Contains(err.Error(), "not a regular file") {
 			err = fmt.Errorf("remote source is a directory; use -r to copy directories")
@@ -165,6 +184,68 @@ func scpDownloadOne(client *ssh.Client, remoteSource, localTarget string, forceD
 		return finishSession(session, stderr.String(), fmt.Errorf("close scp download stream: %w", err))
 	}
 	return finishSession(session, stderr.String(), nil)
+}
+
+type scpReporter struct {
+	mode       string
+	direction  Direction
+	totalPaths int
+	completed  int
+	bytes      int64
+	enabled    bool
+}
+
+func newSCPReporter(spec *Spec, cfg scpConfig) *scpReporter {
+	return &scpReporter{
+		mode:       string(spec.Mode),
+		direction:  spec.Direction,
+		totalPaths: len(spec.Sources),
+		enabled:    !cfg.quiet && scpStatusWriter != nil && scpStatusWriterIsTerminal(scpStatusWriter),
+	}
+}
+
+func (r *scpReporter) start() {
+	if !r.enabled {
+		return
+	}
+	fmt.Fprintf(scpStatusWriter, "Transfer starting: %d path(s) via %s %s\n", r.totalPaths, r.mode, r.direction)
+}
+
+func (r *scpReporter) fileDone(path string, size int64) {
+	if !r.enabled {
+		return
+	}
+	r.completed++
+	r.bytes += size
+	fmt.Fprintf(scpStatusWriter, "%s (file %d, %s)\n", sanitizeTransferStatusPath(path), r.completed, humanizeBytes(size))
+}
+
+func (r *scpReporter) finish() {
+	if !r.enabled {
+		return
+	}
+	fmt.Fprintf(scpStatusWriter, "Transfer complete: %d file(s), %s transferred via %s %s\n", r.completed, humanizeBytes(r.bytes), r.mode, r.direction)
+}
+
+func isTransferSuccess(code int, err error) bool {
+	return err == nil && code == 0
+}
+
+func sanitizeTransferStatusPath(path string) string {
+	return strconv.Quote(path)
+}
+
+func humanizeBytes(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
 }
 
 type lockedBuffer struct {
@@ -224,7 +305,7 @@ func remoteCommandPath(p string) string {
 	return p
 }
 
-func sendLocalPath(w *bufio.Writer, r *bufio.Reader, source string, cfg scpConfig) error {
+func sendLocalPath(w *bufio.Writer, r *bufio.Reader, source string, cfg scpConfig, reporter *scpReporter) error {
 	info, err := os.Stat(source)
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", source, err)
@@ -247,7 +328,7 @@ func sendLocalPath(w *bufio.Writer, r *bufio.Reader, source string, cfg scpConfi
 		}
 		for _, entry := range entries {
 			child := filepath.Join(source, entry.Name())
-			if err := sendLocalPath(w, r, child, cfg); err != nil {
+			if err := sendLocalPath(w, r, child, cfg, reporter); err != nil {
 				return err
 			}
 		}
@@ -284,7 +365,11 @@ func sendLocalPath(w *bufio.Writer, r *bufio.Reader, source string, cfg scpConfi
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("flush file data: %w", err)
 	}
-	return readSCPAck(r)
+	if err := readSCPAck(r); err != nil {
+		return err
+	}
+	reporter.fileDone(source, info.Size())
+	return nil
 }
 
 func sendDirStart(w *bufio.Writer, r *bufio.Reader, name string, perm os.FileMode) error {
@@ -331,7 +416,7 @@ func prepareDownloadRoot(localTarget, remoteSource string, forceDir bool) (downl
 	return downloadRoot{baseDir: localTarget, asDir: false}, nil
 }
 
-func receiveIntoRoot(r *bufio.Reader, w *bufio.Writer, root downloadRoot, cfg scpConfig) error {
+func receiveIntoRoot(r *bufio.Reader, w *bufio.Writer, root downloadRoot, cfg scpConfig, reporter *scpReporter) error {
 	stack := []downloadDir{{path: root.baseDir}}
 	var pendingTimes *fileTimes
 	rootStarted := false
@@ -422,7 +507,7 @@ func receiveIntoRoot(r *bufio.Reader, w *bufio.Writer, root downloadRoot, cfg sc
 			if err := writeSCPAck(w); err != nil {
 				return err
 			}
-			if err := receiveFile(r, target, mode, size, pendingTimes); err != nil {
+			if err := receiveFile(r, target, mode, size, pendingTimes, reporter); err != nil {
 				return err
 			}
 			pendingTimes = nil
@@ -519,7 +604,7 @@ func parseHeaderCommon(line string) (os.FileMode, string, int64, error) {
 	return os.FileMode(modeValue), fields[2], sizeValue, nil
 }
 
-func receiveFile(r *bufio.Reader, target string, mode os.FileMode, size int64, times *fileTimes) error {
+func receiveFile(r *bufio.Reader, target string, mode os.FileMode, size int64, times *fileTimes, reporter *scpReporter) error {
 	file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", target, err)
@@ -545,6 +630,7 @@ func receiveFile(r *bufio.Reader, target string, mode os.FileMode, size int64, t
 			return fmt.Errorf("chtimes %s: %w", target, err)
 		}
 	}
+	reporter.fileDone(target, size)
 	return nil
 }
 

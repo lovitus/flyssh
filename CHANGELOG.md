@@ -1,5 +1,22 @@
 # Changelog / 更新日志
 
+## v1.0.10 (2026-04-06)
+
+### Bug Fixes / 修复
+
+- **Restrict SCP status output to interactive terminals** — built-in SCP progress messages now stay silent in non-TTY contexts and still honor `-q`, avoiding stderr regressions in CI jobs, scripts, and automation that expect clean success output / 收紧 SCP 状态输出到交互式终端：内置 SCP 进度信息现在仅在 TTY 场景默认显示，并继续遵守 `-q`，避免在 CI、脚本和依赖干净 stderr 的自动化场景中引入行为回归
+- **Escape SCP status filenames before printing** — transferred paths shown in progress output are now safely quoted so remote-controlled filenames cannot inject fake log lines or terminal control sequences / 转义 SCP 状态中的文件名：进度输出里的传输路径现在会安全引用，避免远端可控文件名伪造日志行或注入终端控制序列
+- **Gate SCP completion messaging on real success** — completion status is emitted only when the transfer exits with code `0` and no error, preventing false success messages on non-zero remote exits / 按真实成功条件输出 SCP 完成信息：仅当传输退出码为 `0` 且无错误时才显示完成状态，避免远端非零退出时误报成功
+
+### Verification / 验证
+
+- `go test ./pkg/transfer`
+- `go test -race ./pkg/transfer`
+- `go test ./...`
+- Live SCP validation on `node4`: quiet mode stays silent, interactive mode still shows start/file/complete status / 基于 `node4` 的 SCP 实机验证：`-q` 模式保持静默，交互模式仍显示开始/文件/完成状态
+
+---
+
 ## v1.0.9 (2026-04-06)
 
 ### Bug Fixes / 修复

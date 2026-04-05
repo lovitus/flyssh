@@ -1,8 +1,12 @@
 package transfer
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +19,16 @@ func TestSCPUploadFile(t *testing.T) {
 	server := testkit.StartSSHServer(t, map[string]string{"u1": "p1"})
 	client := dialTransferSSH(t, server.Addr, "u1", "p1")
 	defer client.Close()
+
+	var status bytes.Buffer
+	prevWriter := scpStatusWriter
+	prevIsTerminal := scpStatusWriterIsTerminal
+	scpStatusWriter = &status
+	scpStatusWriterIsTerminal = func(io.Writer) bool { return true }
+	defer func() {
+		scpStatusWriter = prevWriter
+		scpStatusWriterIsTerminal = prevIsTerminal
+	}()
 
 	localDir := t.TempDir()
 	remoteDir := t.TempDir()
@@ -42,12 +56,32 @@ func TestSCPUploadFile(t *testing.T) {
 	if string(data) != "hello upload" {
 		t.Fatalf("unexpected uploaded contents: %q", data)
 	}
+	output := status.String()
+	if !strings.Contains(output, "Transfer starting: 1 path(s) via scp upload") {
+		t.Fatalf("missing start output: %q", output)
+	}
+	if !strings.Contains(output, strconv.Quote(localFile)+" (file 1, 12 B)") {
+		t.Fatalf("missing file progress output: %q", output)
+	}
+	if !strings.Contains(output, "Transfer complete: 1 file(s), 12 B transferred via scp upload") {
+		t.Fatalf("missing completion output: %q", output)
+	}
 }
 
 func TestSCPDownloadFileToDirectory(t *testing.T) {
 	server := testkit.StartSSHServer(t, map[string]string{"u1": "p1"})
 	client := dialTransferSSH(t, server.Addr, "u1", "p1")
 	defer client.Close()
+
+	var status bytes.Buffer
+	prevWriter := scpStatusWriter
+	prevIsTerminal := scpStatusWriterIsTerminal
+	scpStatusWriter = &status
+	scpStatusWriterIsTerminal = func(io.Writer) bool { return true }
+	defer func() {
+		scpStatusWriter = prevWriter
+		scpStatusWriterIsTerminal = prevIsTerminal
+	}()
 
 	remoteDir := t.TempDir()
 	localDir := t.TempDir()
@@ -73,6 +107,114 @@ func TestSCPDownloadFileToDirectory(t *testing.T) {
 	}
 	if string(data) != "hello download" {
 		t.Fatalf("unexpected downloaded contents: %q", data)
+	}
+	output := status.String()
+	if !strings.Contains(output, "Transfer starting: 1 path(s) via scp download") {
+		t.Fatalf("missing start output: %q", output)
+	}
+	if !strings.Contains(output, strconv.Quote(filepath.Join(localDir, filepath.Base(remoteFile)))+" (file 1, 14 B)") {
+		t.Fatalf("missing file progress output: %q", output)
+	}
+	if !strings.Contains(output, "Transfer complete: 1 file(s), 14 B transferred via scp download") {
+		t.Fatalf("missing completion output: %q", output)
+	}
+}
+
+func TestSCPUploadQuietSuppressesStatusOutput(t *testing.T) {
+	server := testkit.StartSSHServer(t, map[string]string{"u1": "p1"})
+	client := dialTransferSSH(t, server.Addr, "u1", "p1")
+	defer client.Close()
+
+	var status bytes.Buffer
+	prevWriter := scpStatusWriter
+	prevIsTerminal := scpStatusWriterIsTerminal
+	scpStatusWriter = &status
+	scpStatusWriterIsTerminal = func(io.Writer) bool { return true }
+	defer func() {
+		scpStatusWriter = prevWriter
+		scpStatusWriterIsTerminal = prevIsTerminal
+	}()
+
+	localDir := t.TempDir()
+	remoteDir := t.TempDir()
+	localFile := filepath.Join(localDir, "quiet.txt")
+	if err := os.WriteFile(localFile, []byte("quiet"), 0o644); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	target := filepath.Join(remoteDir, "uploaded.txt")
+
+	spec := &Spec{
+		Mode:      ModeSCP,
+		Direction: DirectionUpload,
+		Flags:     []string{"-q"},
+		Sources:   []string{localFile},
+		Target:    target,
+	}
+	code, err := Run(client, spec)
+	if err != nil || code != 0 {
+		t.Fatalf("Run upload: code=%d err=%v", code, err)
+	}
+	if got := status.String(); got != "" {
+		t.Fatalf("quiet mode should suppress transfer status output, got: %q", got)
+	}
+}
+
+func TestSCPUploadNonTerminalSuppressesStatusOutput(t *testing.T) {
+	server := testkit.StartSSHServer(t, map[string]string{"u1": "p1"})
+	client := dialTransferSSH(t, server.Addr, "u1", "p1")
+	defer client.Close()
+
+	var status bytes.Buffer
+	prevWriter := scpStatusWriter
+	prevIsTerminal := scpStatusWriterIsTerminal
+	scpStatusWriter = &status
+	scpStatusWriterIsTerminal = func(io.Writer) bool { return false }
+	defer func() {
+		scpStatusWriter = prevWriter
+		scpStatusWriterIsTerminal = prevIsTerminal
+	}()
+
+	localDir := t.TempDir()
+	remoteDir := t.TempDir()
+	localFile := filepath.Join(localDir, "silent.txt")
+	if err := os.WriteFile(localFile, []byte("silent"), 0o644); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	target := filepath.Join(remoteDir, "uploaded.txt")
+
+	spec := &Spec{
+		Mode:      ModeSCP,
+		Direction: DirectionUpload,
+		Sources:   []string{localFile},
+		Target:    target,
+	}
+	code, err := Run(client, spec)
+	if err != nil || code != 0 {
+		t.Fatalf("Run upload: code=%d err=%v", code, err)
+	}
+	if got := status.String(); got != "" {
+		t.Fatalf("non-terminal status output should be suppressed, got: %q", got)
+	}
+}
+
+func TestIsTransferSuccess(t *testing.T) {
+	if !isTransferSuccess(0, nil) {
+		t.Fatal("expected success for code=0 err=nil")
+	}
+	if isTransferSuccess(1, nil) {
+		t.Fatal("non-zero exit code must not be treated as success")
+	}
+	if isTransferSuccess(0, errors.New("boom")) {
+		t.Fatal("error must not be treated as success")
+	}
+}
+
+func TestSanitizeTransferStatusPath(t *testing.T) {
+	path := "line1\nline2\t\x1b[31mred"
+	got := sanitizeTransferStatusPath(path)
+	want := strconv.Quote(path)
+	if got != want {
+		t.Fatalf("sanitizeTransferStatusPath() = %q, want %q", got, want)
 	}
 }
 
