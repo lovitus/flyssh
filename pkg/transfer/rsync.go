@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/flyssh/flyssh/pkg/auth"
 	"github.com/flyssh/flyssh/pkg/cli"
 )
 
@@ -18,13 +19,15 @@ const (
 )
 
 var lookPath = exec.LookPath
+var executablePath = os.Executable
+var startPromptBroker = auth.StartPromptBroker
 
 func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
 	if _, err := lookPath("rsync"); err != nil {
 		return 1, fmt.Errorf("local rsync binary not found in PATH")
 	}
 
-	executable, err := os.Executable()
+	executable, err := executablePath()
 	if err != nil {
 		return 1, fmt.Errorf("resolve current executable: %w", err)
 	}
@@ -32,12 +35,24 @@ func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
 	if err != nil {
 		return 1, err
 	}
+	var cleanupBroker func()
+	brokerEnv, cleanupBroker, err := startPromptBroker()
+	if err == nil {
+		defer cleanupBroker()
+	} else {
+		brokerEnv = nil
+		cleanupBroker = nil
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "flyssh: prompt broker unavailable, falling back to direct tty prompts: %v\n", err)
+		}
+	}
 
 	cmd := exec.Command("rsync", buildRsyncCommandArgs(spec, executable)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), InternalRsyncOptionsEnv+"="+payload)
+	cmd.Env = append(cmd.Env, brokerEnv...)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

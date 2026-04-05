@@ -3,10 +3,13 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/flyssh/flyssh/pkg/cli"
 	"golang.org/x/crypto/ssh"
@@ -110,5 +113,102 @@ func TestAutoAcceptHostKeyCallbackConfirmsChangedKeyViaPromptInput(t *testing.T)
 	}
 	if string(data) == "" {
 		t.Fatal("expected known_hosts to contain updated key")
+	}
+}
+
+func TestPromptBrokerProvidesPromptInput(t *testing.T) {
+	oldLineReader := localPromptLineReader
+	oldPasswordReader := localPromptPasswordReader
+	oldBrokerLineReader := brokerPromptLineReader
+	oldBrokerPasswordReader := brokerPromptPasswordReader
+	localPromptLineReader = func() (string, error) { return "line-answer", nil }
+	localPromptPasswordReader = func() ([]byte, error) { return []byte("secret-answer"), nil }
+	brokerPromptLineReader = func(cancel <-chan struct{}) (string, error) { return "line-answer", nil }
+	brokerPromptPasswordReader = func(cancel <-chan struct{}) (string, error) { return "secret-answer", nil }
+
+	env, cleanup, err := StartPromptBroker()
+	if err != nil {
+		t.Fatalf("StartPromptBroker: %v", err)
+	}
+	defer cleanup()
+	defer func() {
+		localPromptLineReader = oldLineReader
+		localPromptPasswordReader = oldPasswordReader
+		brokerPromptLineReader = oldBrokerLineReader
+		brokerPromptPasswordReader = oldBrokerPasswordReader
+	}()
+
+	for _, kv := range env {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			t.Fatalf("bad broker env: %q", kv)
+		}
+		t.Setenv(parts[0], parts[1])
+	}
+
+	line, err := readPromptLine()
+	if err != nil {
+		t.Fatalf("readPromptLine: %v", err)
+	}
+	if line != "line-answer" {
+		t.Fatalf("unexpected line answer: %q", line)
+	}
+
+	password, err := readPromptPassword()
+	if err != nil {
+		t.Fatalf("readPromptPassword: %v", err)
+	}
+	if string(password) != "secret-answer" {
+		t.Fatalf("unexpected password answer: %q", password)
+	}
+}
+
+func TestPromptBrokerCleanupDoesNotWaitForAbandonedPrompt(t *testing.T) {
+	oldBrokerLineReader := brokerPromptLineReader
+	workerDone := make(chan struct{})
+	brokerPromptLineReader = func(cancel <-chan struct{}) (string, error) {
+		<-cancel
+		close(workerDone)
+		return "", nil
+	}
+	defer func() {
+		<-workerDone
+		brokerPromptLineReader = oldBrokerLineReader
+	}()
+
+	env, cleanup, err := StartPromptBroker()
+	if err != nil {
+		t.Fatalf("StartPromptBroker: %v", err)
+	}
+
+	values := map[string]string{}
+	for _, kv := range env {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			t.Fatalf("bad broker env: %q", kv)
+		}
+		values[parts[0]] = parts[1]
+	}
+
+	conn, err := net.Dial(values[PromptBrokerNetworkEnv], values[PromptBrokerAddrEnv])
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	req := promptBrokerRequest{Token: values[PromptBrokerTokenEnv], Op: "line"}
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		t.Fatalf("Encode request: %v", err)
+	}
+	_ = conn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		cleanup()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup did not return after abandoned prompt")
 	}
 }

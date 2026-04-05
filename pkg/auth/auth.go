@@ -20,6 +20,8 @@ import (
 )
 
 var promptInputOpener = openPromptInput
+var localPromptLineReader = readLocalPromptLine
+var localPromptPasswordReader = readLocalPromptPassword
 
 // BuildAuthMethods constructs SSH auth methods from config and options
 func BuildAuthMethods(cfg *config.ResolvedConfig, opts *cli.Options) ([]ssh.AuthMethod, error) {
@@ -198,6 +200,20 @@ func openPromptInput() (*os.File, func(), error) {
 }
 
 func readPromptLine() (string, error) {
+	if value, ok, err := requestPromptBroker("line"); ok {
+		return value, err
+	}
+	return localPromptLineReader()
+}
+
+func readPromptPassword() ([]byte, error) {
+	if value, ok, err := requestPromptBroker("password"); ok {
+		return []byte(value), err
+	}
+	return localPromptPasswordReader()
+}
+
+func readLocalPromptLine() (string, error) {
 	in, closeFn, err := promptInputOpener()
 	if err != nil {
 		return "", err
@@ -211,7 +227,7 @@ func readPromptLine() (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-func readPromptPassword() ([]byte, error) {
+func readLocalPromptPassword() ([]byte, error) {
 	in, closeFn, err := promptInputOpener()
 	if err != nil {
 		return nil, err

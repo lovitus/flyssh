@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## v1.0.9 (2026-04-06)
+
+### Bug Fixes / 修复
+
+- **Fix changed-host-key confirmation for managed rsync without double-auth side effects** — replace the failed rsync preflight approach with a single-connection prompt broker so `--rsync-upload` / `--rsync-download` can accept `confirm fingerprint changed` and other interactive auth prompts without opening an extra SSH login / 修复托管 rsync 的 changed-host-key 确认且避免双重认证副作用：移除有问题的 rsync 预连接方案，改为单连接 prompt broker，使 `--rsync-upload` / `--rsync-download` 在不额外建立 SSH 登录的前提下正确处理 `confirm fingerprint changed` 与其他交互认证提示
+- **Make prompt broker failure non-fatal for non-interactive rsync paths** — broker startup now prefers local Unix sockets where available and degrades gracefully to the existing tty path if no listener can be created, avoiding a new hard dependency on loopback TCP listeners / 降低 prompt broker 对非交互 rsync 路径的侵入性：broker 优先使用本地 Unix socket，若监听建立失败则自动回退到原有 tty 输入路径，不再把 loopback TCP 监听能力变成新的硬前置条件
+- **Avoid broker shutdown hangs on abandoned prompts** — pending prompt requests now observe peer disconnects and broker shutdown so cancelled transfers and failed auth flows do not block cleanup waiting for an orphaned tty read / 修复 broker 在孤儿 prompt 上的退出挂死：待处理提示现在会感知对端断开和 broker 关闭，取消传输或认证失败时不会再因遗留 tty 读取而卡住清理流程
+
+### Verification / 验证
+
+- Automated tests: `go test ./...` and `go test -race ./...` / 自动化测试：`go test ./...` 与 `go test -race ./...`
+- Live transfer checks with provided lab nodes: single-hop and multi-hop `scp` / `rsync`, wrong-password auth failure, and real changed-host-key confirmation across single-hop, first-hop, and second-hop routes / 实机验证：基于提供的测试节点完成单跳与多跳 `scp` / `rsync`、错误密码认证失败，以及真实 changed-host-key 场景下的单跳、首跳和次跳确认流程验证
+
+---
+
 ## v1.0.8 (2026-04-05)
 
 ### Bug Fixes / 修复

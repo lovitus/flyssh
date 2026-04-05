@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +93,102 @@ func TestRunLocalRsyncMissingBinary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "local rsync binary not found") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunLocalRsyncProvidesPromptBrokerEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeRsync := filepath.Join(tmpDir, "rsync")
+	envPath := filepath.Join(tmpDir, "env.txt")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$FLYSSH_PROMPT_BROKER_NETWORK\" > \"$CAPTURE_ENV\"\nprintf '%s\\n' \"$FLYSSH_PROMPT_BROKER_ADDR\" >> \"$CAPTURE_ENV\"\nprintf '%s\\n' \"$FLYSSH_PROMPT_BROKER_TOKEN\" >> \"$CAPTURE_ENV\"\nexit 0\n"
+	if err := os.WriteFile(fakeRsync, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake rsync: %v", err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	t.Setenv("CAPTURE_ENV", envPath)
+
+	oldLookPath := lookPath
+	oldExecutablePath := executablePath
+	lookPath = exec.LookPath
+	executablePath = func() (string, error) { return "/tmp/flyssh-test", nil }
+	defer func() {
+		lookPath = oldLookPath
+		executablePath = oldExecutablePath
+	}()
+
+	code, err := RunLocalRsync(
+		&cli.Options{Host: "host", User: "user", Password: "secret"},
+		&Spec{Mode: ModeRsync, Direction: DirectionUpload, Sources: []string{"./src"}, Target: "/dst"},
+	)
+	if err != nil || code != 0 {
+		t.Fatalf("RunLocalRsync: code=%d err=%v", code, err)
+	}
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("unexpected captured env: %q", data)
+	}
+	if lines[0] == "" {
+		t.Fatal("expected prompt broker network to be set")
+	}
+	if lines[1] == "" {
+		t.Fatal("expected prompt broker address to be set")
+	}
+	if lines[2] == "" {
+		t.Fatal("expected prompt broker token to be set")
+	}
+	if os.Getenv("FLYSSH_PROMPT_BROKER_NETWORK") != "" || os.Getenv("FLYSSH_PROMPT_BROKER_ADDR") != "" || os.Getenv("FLYSSH_PROMPT_BROKER_TOKEN") != "" {
+		t.Fatal("broker env should only be set on the rsync child process")
+	}
+}
+
+func TestRunLocalRsyncContinuesWhenPromptBrokerUnavailable(t *testing.T) {
+	tmpDir := t.TempDir()
+	fakeRsync := filepath.Join(tmpDir, "rsync")
+	markerPath := filepath.Join(tmpDir, "ran.txt")
+	script := "#!/bin/sh\nprintf ok > \"$RUN_MARKER\"\nexit 0\n"
+	if err := os.WriteFile(fakeRsync, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake rsync: %v", err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+oldPath)
+	t.Setenv("RUN_MARKER", markerPath)
+
+	oldLookPath := lookPath
+	oldExecutablePath := executablePath
+	oldStartPromptBroker := startPromptBroker
+	startPromptBroker = func() ([]string, func(), error) {
+		return nil, nil, fmt.Errorf("prompt broker unavailable")
+	}
+	lookPath = exec.LookPath
+	executablePath = func() (string, error) { return "/tmp/flyssh-test", nil }
+	defer func() {
+		lookPath = oldLookPath
+		executablePath = oldExecutablePath
+		startPromptBroker = oldStartPromptBroker
+	}()
+
+	code, err := RunLocalRsync(
+		&cli.Options{Host: "host", User: "user", Password: "secret"},
+		&Spec{Mode: ModeRsync, Direction: DirectionUpload, Sources: []string{"./src"}, Target: "/dst"},
+	)
+	if err != nil || code != 0 {
+		t.Fatalf("RunLocalRsync: code=%d err=%v", code, err)
+	}
+
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("read run marker: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("unexpected marker contents: %q", data)
 	}
 }
 
