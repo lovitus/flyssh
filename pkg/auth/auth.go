@@ -3,10 +3,12 @@ package auth
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/flyssh/flyssh/pkg/cli"
@@ -16,6 +18,8 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 	"golang.org/x/term"
 )
+
+var promptInputOpener = openPromptInput
 
 // BuildAuthMethods constructs SSH auth methods from config and options
 func BuildAuthMethods(cfg *config.ResolvedConfig, opts *cli.Options) ([]ssh.AuthMethod, error) {
@@ -85,7 +89,7 @@ func buildAuthMethodsWithPassword(cfg *config.ResolvedConfig, opts *cli.Options,
 		methods = append(methods, ssh.KeyboardInteractive(keyboardInteractiveChallenge))
 		methods = append(methods, ssh.PasswordCallback(func() (string, error) {
 			fmt.Fprintf(os.Stderr, "%s@%s's password: ", cfg.User, cfg.Hostname)
-			pass, err := term.ReadPassword(int(os.Stdin.Fd()))
+			pass, err := readPromptPassword()
 			fmt.Fprintln(os.Stderr)
 			if err != nil {
 				return "", err
@@ -144,8 +148,7 @@ func GetHostKeyCallback(cfg *config.ResolvedConfig, opts *cli.Options) ssh.HostK
 			hostname, remote.String())
 		fmt.Fprintf(os.Stderr, "%s key fingerprint is %s.\n", key.Type(), fingerprint)
 		fmt.Fprintf(os.Stderr, "Are you sure you want to continue connecting (yes/no)? ")
-		var answer string
-		fmt.Fscanln(os.Stdin, &answer)
+		answer, _ := readPromptLine()
 		if strings.ToLower(strings.TrimSpace(answer)) == "yes" {
 			if knownHostsFile != "" {
 				saveHostKey(knownHostsFile, hostname, key)
@@ -178,6 +181,45 @@ func ensureKnownHostsFile(path string) {
 	}
 }
 
+func openPromptInput() (*os.File, func(), error) {
+	device := "/dev/tty"
+	if runtime.GOOS == "windows" {
+		device = "CONIN$"
+	}
+
+	f, err := os.Open(device)
+	if err == nil {
+		return f, func() { _ = f.Close() }, nil
+	}
+	if os.Stdin != nil {
+		return os.Stdin, func() {}, nil
+	}
+	return nil, nil, err
+}
+
+func readPromptLine() (string, error) {
+	in, closeFn, err := promptInputOpener()
+	if err != nil {
+		return "", err
+	}
+	defer closeFn()
+
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
+func readPromptPassword() ([]byte, error) {
+	in, closeFn, err := promptInputOpener()
+	if err != nil {
+		return nil, err
+	}
+	defer closeFn()
+	return term.ReadPassword(int(in.Fd()))
+}
+
 // autoAcceptHostKeyCallback wraps knownhosts callback with auto-accept/confirm logic.
 func autoAcceptHostKeyCallback(cb ssh.HostKeyCallback, knownHostsFile string, opts *cli.Options, autoAcceptNew bool) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
@@ -200,9 +242,7 @@ func autoAcceptHostKeyCallback(cb ssh.HostKeyCallback, knownHostsFile string, op
 				fmt.Fprintf(os.Stderr, "\nTo accept the new key, type exactly: confirm fingerprint changed\n")
 				fmt.Fprintf(os.Stderr, "> ")
 
-				reader := bufio.NewReader(os.Stdin)
-				line, _ := reader.ReadString('\n')
-				line = strings.TrimSpace(line)
+				line, _ := readPromptLine()
 
 				if line == "confirm fingerprint changed" {
 					// Remove old key and save new one
@@ -227,8 +267,7 @@ func autoAcceptHostKeyCallback(cb ssh.HostKeyCallback, knownHostsFile string, op
 				hostname, remote.String())
 			fmt.Fprintf(os.Stderr, "%s key fingerprint is %s.\n", key.Type(), fingerprint)
 			fmt.Fprintf(os.Stderr, "Are you sure you want to continue connecting (yes/no)? ")
-			var answer string
-			fmt.Fscanln(os.Stdin, &answer)
+			answer, _ := readPromptLine()
 			if strings.ToLower(strings.TrimSpace(answer)) == "yes" {
 				saveHostKey(knownHostsFile, hostname, key)
 				return nil
@@ -299,6 +338,8 @@ func removeHostKey(path, hostname string) {
 		return
 	}
 
+	aliases := knownHostAliases(hostname)
+
 	// Normalize hostname for comparison (knownhosts uses [host]:port format)
 	var lines []string
 	for _, line := range strings.Split(string(data), "\n") {
@@ -313,7 +354,7 @@ func removeHostKey(path, hostname string) {
 			hosts := strings.Split(fields[0], ",")
 			match := false
 			for _, h := range hosts {
-				if h == hostname || strings.HasPrefix(h, hostname+" ") {
+				if aliases[h] {
 					match = true
 					break
 				}
@@ -326,6 +367,25 @@ func removeHostKey(path, hostname string) {
 	}
 
 	os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
+}
+
+func knownHostAliases(hostname string) map[string]bool {
+	aliases := map[string]bool{hostname: true}
+
+	host, port, err := net.SplitHostPort(hostname)
+	if err == nil {
+		aliases[net.JoinHostPort(host, port)] = true
+		aliases["["+host+"]:"+port] = true
+	}
+
+	if strings.HasPrefix(hostname, "[") {
+		host, port, err := net.SplitHostPort(hostname)
+		if err == nil {
+			aliases[host+":"+port] = true
+		}
+	}
+
+	return aliases
 }
 
 func getAgentAuth() ssh.AuthMethod {
@@ -358,7 +418,7 @@ func loadPrivateKey(path string, opts *cli.Options) (ssh.Signer, error) {
 	// Check if it's a passphrase error
 	if _, ok := err.(*ssh.PassphraseMissingError); ok {
 		fmt.Fprintf(os.Stderr, "Enter passphrase for key '%s': ", path)
-		passphrase, err2 := term.ReadPassword(int(os.Stdin.Fd()))
+		passphrase, err2 := readPromptPassword()
 		fmt.Fprintln(os.Stderr)
 		if err2 != nil {
 			return nil, err2
@@ -381,11 +441,13 @@ func keyboardInteractiveChallenge(name, instruction string, questions []string, 
 	for i, q := range questions {
 		fmt.Fprint(os.Stderr, q)
 		if echos[i] {
-			var answer string
-			fmt.Fscanln(os.Stdin, &answer)
+			answer, err := readPromptLine()
+			if err != nil {
+				return nil, err
+			}
 			answers[i] = answer
 		} else {
-			pass, err := term.ReadPassword(int(os.Stdin.Fd()))
+			pass, err := readPromptPassword()
 			fmt.Fprintln(os.Stderr)
 			if err != nil {
 				return nil, err

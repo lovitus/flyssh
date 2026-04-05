@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## v1.0.8 (2026-04-05)
+
+### Bug Fixes / 修复
+
+- **Fix host-key confirmation during managed transfers** — interactive host-key confirmation, password prompts, passphrase prompts, and keyboard-interactive responses now read from the controlling terminal instead of protocol stdin, so `--rsync-upload` / `--rsync-download` no longer hang after typing `confirm fingerprint changed` / 修复托管传输期间的主机密钥确认卡住问题：交互式主机密钥确认、密码输入、密钥口令输入和 keyboard-interactive 响应现在统一从控制终端读取，不再与协议 stdin 冲突，因此 `--rsync-upload` / `--rsync-download` 输入 `confirm fingerprint changed` 后不会再无响应
+
+### Verification / 验证
+
+- `go test ./pkg/auth`
+- `go test ./...`
+- `go test -race ./pkg/auth`
+- `go test -race ./...`
+
+---
+
 ## v1.0.7 (2026-04-05)
 
 ### Bug Fixes / 修复
