@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -70,8 +71,8 @@ func scpUpload(client *ssh.Client, spec *Spec, cfg scpConfig) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("scp upload stdout: %w", err)
 	}
-	var stderr bytes.Buffer
-	session.Stderr = &stderr
+	stderr := newLockedBuffer()
+	session.Stderr = stderr
 
 	cmd := buildSCPCopyCommand("-t", spec.Target, cfg, len(spec.Sources) > 1)
 	if err := session.Start(cmd); err != nil {
@@ -133,8 +134,8 @@ func scpDownloadOne(client *ssh.Client, remoteSource, localTarget string, forceD
 	if err != nil {
 		return 1, fmt.Errorf("scp download stdout: %w", err)
 	}
-	var stderr bytes.Buffer
-	session.Stderr = &stderr
+	stderr := newLockedBuffer()
+	session.Stderr = stderr
 
 	cmd := buildSCPCopyCommand("-f", remoteSource, cfg, false)
 	if err := session.Start(cmd); err != nil {
@@ -164,6 +165,27 @@ func scpDownloadOne(client *ssh.Client, remoteSource, localTarget string, forceD
 		return finishSession(session, stderr.String(), fmt.Errorf("close scp download stream: %w", err))
 	}
 	return finishSession(session, stderr.String(), nil)
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func newLockedBuffer() *lockedBuffer {
+	return &lockedBuffer{}
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
 }
 
 func validateUploadSources(sources []string, cfg scpConfig) error {
