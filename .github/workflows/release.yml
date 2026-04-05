@@ -159,34 +159,34 @@ jobs:
 
           version="${{ steps.meta.outputs.version }}"
           python3 - <<'PY'
-from pathlib import Path
-import os
-import sys
+          from pathlib import Path
+          import os
+          import sys
 
-version = os.environ["VERSION"]
-header = f"## v{version}"
-text = Path("CHANGELOG.md").read_text(encoding="utf-8")
-lines = text.splitlines()
+          version = os.environ["VERSION"]
+          header = f"## v{version}"
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          lines = text.splitlines()
 
-start = None
-for i, line in enumerate(lines):
-    if line == header or line.startswith(header + " "):
-        start = i
-        break
+          start = None
+          for i, line in enumerate(lines):
+              if line == header or line.startswith(header + " "):
+                  start = i
+                  break
 
-if start is None:
-    sys.stderr.write(f"No changelog section found for {header}\n")
-    sys.exit(1)
+          if start is None:
+              sys.stderr.write(f"No changelog section found for {header}\n")
+              sys.exit(1)
 
-end = len(lines)
-for i in range(start + 1, len(lines)):
-    if lines[i].startswith("## "):
-        end = i
-        break
+          end = len(lines)
+          for i in range(start + 1, len(lines)):
+              if lines[i].startswith("## "):
+                  end = i
+                  break
 
-body = "\n".join(lines[start:end]).strip() + "\n"
-Path("RELEASE_NOTES.md").write_text(body, encoding="utf-8")
-PY
+          body = "\n".join(lines[start:end]).strip() + "\n"
+          Path("RELEASE_NOTES.md").write_text(body, encoding="utf-8")
+          PY
 
           if [[ ! -s RELEASE_NOTES.md ]]; then
             echo "No changelog section found for ## v${version}" >&2

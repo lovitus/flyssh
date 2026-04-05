@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## v1.0.14 (2026-04-06)
+
+### CI / Release
+
+- **Fix release workflow YAML for Python-based changelog slicing** — indent the embedded Python block correctly under `run: |` so GitHub Actions parses the workflow again and the deterministic release note extraction added in `v1.0.13` can actually execute / 修复基于 Python 的 changelog 切段逻辑在 release workflow 中的 YAML 结构：把嵌入的 Python 代码正确缩进到 `run: |` 下，让 GitHub Actions 能重新解析 workflow，并真正执行 `v1.0.13` 引入的稳定 release note 提取逻辑
+
+### Verification / 验证
+
+- Local inspection of [release.yml](/Users/fanli/flyssh/.github/workflows/release.yml) after indentation fix
+- Prior `v1.0.12` run already confirmed tests and artifact builds passed
+- Prior `v1.0.13` runs failed before job start, confirming the remaining issue was workflow parsing rather than build/test behavior / 之前的 `v1.0.13` 运行在 job 启动前即失败，说明剩余问题是 workflow 解析而不是构建/测试行为
+
+---
+
 ## v1.0.13 (2026-04-06)
 
 ### CI / Release
