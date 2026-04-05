@@ -19,10 +19,11 @@ import (
 	"github.com/flyssh/flyssh/pkg/forwarding"
 	"github.com/flyssh/flyssh/pkg/session"
 	"github.com/flyssh/flyssh/pkg/socks"
+	"github.com/flyssh/flyssh/pkg/transfer"
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "1.0.5"
+var Version = "1.0.6"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
@@ -52,6 +53,9 @@ func scrubArgs() {
 
 // shouldAutoReconnect returns true if credentials are non-interactive
 func shouldAutoReconnect(opts *cli.Options) bool {
+	if opts.HasTransferMode() {
+		return false
+	}
 	if opts.NoReconnect {
 		return false
 	}
@@ -67,15 +71,46 @@ func shouldAutoReconnect(opts *cli.Options) bool {
 	return false
 }
 
-// buildHopChain constructs the full multi-hop chain from CLI options.
-func buildHopChain(opts *cli.Options) []cli.HopSpec {
+func cloneCLIOptions(opts *cli.Options) *cli.Options {
+	clone := *opts
+	if opts.IdentityFiles != nil {
+		clone.IdentityFiles = append([]string(nil), opts.IdentityFiles...)
+	}
+	if opts.LocalForwards != nil {
+		clone.LocalForwards = append([]string(nil), opts.LocalForwards...)
+	}
+	if opts.RemoteForwards != nil {
+		clone.RemoteForwards = append([]string(nil), opts.RemoteForwards...)
+	}
+	if opts.DynamicForwards != nil {
+		clone.DynamicForwards = append([]string(nil), opts.DynamicForwards...)
+	}
+	if opts.SendEnv != nil {
+		clone.SendEnv = append([]string(nil), opts.SendEnv...)
+	}
+	if opts.ExtraHosts != nil {
+		clone.ExtraHosts = append([]string(nil), opts.ExtraHosts...)
+	}
+	if opts.SSHOptions != nil {
+		clone.SSHOptions = make(map[string]string, len(opts.SSHOptions))
+		for k, v := range opts.SSHOptions {
+			clone.SSHOptions[k] = v
+		}
+	}
+	return &clone
+}
+
+// buildConnectionPlan constructs the full multi-hop chain and effective first-hop
+// auth settings without mutating the original CLI options.
+func buildConnectionPlan(opts *cli.Options) (*cli.Options, []cli.HopSpec, error) {
+	effective := cloneCLIOptions(opts)
 	var hops []cli.HopSpec
 
 	// Extra hops from positional args
 	for _, raw := range opts.ExtraHosts {
 		hop, err := cli.ParseHopSpec(raw)
 		if err != nil {
-			log.Fatalf("bad hop spec %q: %v", raw, err)
+			return nil, nil, fmt.Errorf("bad hop spec %q: %v", raw, err)
 		}
 		hops = append(hops, hop)
 	}
@@ -95,8 +130,8 @@ func buildHopChain(opts *cli.Options) []cli.HopSpec {
 	if opts.PasswordsCSV != "" {
 		passwords := strings.Split(opts.PasswordsCSV, ",")
 		// Index 0 = first host password, 1+ = extra hops
-		if len(passwords) > 0 && passwords[0] != "" && opts.Password == "" {
-			opts.Password = passwords[0]
+		if len(passwords) > 0 && passwords[0] != "" && effective.Password == "" {
+			effective.Password = passwords[0]
 		}
 		for i := 1; i < len(passwords); i++ {
 			if i-1 < len(hops) && passwords[i] != "" {
@@ -110,26 +145,30 @@ func buildHopChain(opts *cli.Options) []cli.HopSpec {
 		keys := strings.Split(opts.KeysCSV, ",")
 		// Index 0 = first host key
 		if len(keys) > 0 && keys[0] != "" {
-			opts.IdentityFiles = append([]string{keys[0]}, opts.IdentityFiles...)
+			effective.IdentityFiles = append([]string{keys[0]}, effective.IdentityFiles...)
 		}
 		for i := 1; i < len(keys); i++ {
 			if i-1 < len(hops) && keys[i] != "" {
 				hops[i-1].KeyFile = keys[i]
 			}
 		}
-	} else if len(opts.IdentityFiles) > 0 {
+	} else if len(effective.IdentityFiles) > 0 {
 		// --key applies to all hops that don't have a specific key
 		for i := range hops {
 			if hops[i].KeyFile == "" {
-				hops[i].KeyFile = opts.IdentityFiles[0]
+				hops[i].KeyFile = effective.IdentityFiles[0]
 			}
 		}
 	}
 
-	return hops
+	return effective, hops, nil
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == transfer.InternalRsyncTransportFlag {
+		os.Exit(runInternalRsyncTransport(os.Args[2:]))
+	}
+
 	// Parse args first, then immediately scrub sensitive values from argv
 	opts, err := cli.ParseArgs(os.Args[1:])
 	if err != nil {
@@ -191,37 +230,19 @@ func main() {
 // runOnce performs a single connect-session cycle.
 // Returns (exitCode, nil) for clean exit, (exitCode, err) for connection loss / error.
 func runOnce(opts *cli.Options) (int, error) {
-	// Load SSH config for first host
-	sshConfig := config.LoadSSHConfig(opts)
-	if opts.Verbose {
-		log.Printf("[host1] Resolved: user=%s host=%s port=%d", sshConfig.User, sshConfig.Hostname, sshConfig.Port)
-	}
-
-	// Connect first host
-	firstClient, err := connectFirstHost(sshConfig, opts)
+	transferSpec, err := transfer.FromOptions(opts)
 	if err != nil {
-		return 255, fmt.Errorf("host1: %w", err)
+		return 255, err
 	}
-	defer func() { forwarding.CleanupClient(firstClient); firstClient.Close() }()
-
-	if opts.Verbose {
-		log.Printf("[host1] Connected to %s:%d", sshConfig.Hostname, sshConfig.Port)
+	if transferSpec != nil && transferSpec.Mode == transfer.ModeRsync {
+		return transfer.RunLocalRsync(opts, transferSpec)
 	}
 
-	// Build and connect multi-hop chain
-	hops := buildHopChain(opts)
-	allClients := []*ssh.Client{firstClient}
-	finalClient := firstClient
-
-	for i, hop := range hops {
-		nextClient, hopErr := connectHop(finalClient, hop, opts, i+2)
-		if hopErr != nil {
-			return 255, fmt.Errorf("hop%d: %w", i+2, hopErr)
-		}
-		defer func(c *ssh.Client) { forwarding.CleanupClient(c); c.Close() }(nextClient)
-		allClients = append(allClients, nextClient)
-		finalClient = nextClient
+	sshConfig, allClients, finalClient, err := connectChain(opts)
+	if err != nil {
+		return 255, err
 	}
+	defer closeClients(allClients)
 
 	// Start keepalive on all clients in the chain
 	stopKeepalive := make(chan struct{})
@@ -232,6 +253,10 @@ func runOnce(opts *cli.Options) (int, error) {
 		}
 	}
 	defer close(stopKeepalive)
+
+	if transferSpec != nil {
+		return transfer.Run(finalClient, transferSpec)
+	}
 
 	// Start port forwarding (all on finalClient)
 	for _, lf := range opts.LocalForwards {
@@ -275,7 +300,7 @@ func runOnce(opts *cli.Options) (int, error) {
 		if opts.Verbose {
 			log.Printf("No command mode (-N), forwarding only")
 		}
-		err := firstClient.Wait()
+		err := allClients[0].Wait()
 		if err != nil {
 			return 255, fmt.Errorf("connection closed: %w", err)
 		}
@@ -293,6 +318,87 @@ func runOnce(opts *cli.Options) (int, error) {
 		return exitCode, err
 	}
 	return exitCode, nil
+}
+
+func connectChain(opts *cli.Options) (*config.ResolvedConfig, []*ssh.Client, *ssh.Client, error) {
+	effectiveOpts, hops, err := buildConnectionPlan(opts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	sshConfig := config.LoadSSHConfig(effectiveOpts)
+	if effectiveOpts.Verbose {
+		log.Printf("[host1] Resolved: user=%s host=%s port=%d", sshConfig.User, sshConfig.Hostname, sshConfig.Port)
+	}
+
+	firstClient, err := connectFirstHost(sshConfig, effectiveOpts)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("host1: %w", err)
+	}
+	if effectiveOpts.Verbose {
+		log.Printf("[host1] Connected to %s:%d", sshConfig.Hostname, sshConfig.Port)
+	}
+
+	allClients := []*ssh.Client{firstClient}
+	finalClient := firstClient
+
+	for i, hop := range hops {
+		nextClient, hopErr := connectHop(finalClient, hop, effectiveOpts, i+2)
+		if hopErr != nil {
+			closeClients(allClients)
+			return nil, nil, nil, fmt.Errorf("hop%d: %w", i+2, hopErr)
+		}
+		allClients = append(allClients, nextClient)
+		finalClient = nextClient
+	}
+
+	return sshConfig, allClients, finalClient, nil
+}
+
+func closeClients(clients []*ssh.Client) {
+	for i := len(clients) - 1; i >= 0; i-- {
+		forwarding.CleanupClient(clients[i])
+		clients[i].Close()
+	}
+}
+
+func runInternalRsyncTransport(args []string) int {
+	opts, err := transfer.DecodeInternalRsyncOptions(os.Getenv(transfer.InternalRsyncOptionsEnv))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
+		return 255
+	}
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "flyssh: rsync transport missing remote command")
+		return 255
+	}
+
+	_, allClients, finalClient, err := connectChain(opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
+		return 255
+	}
+	defer closeClients(allClients)
+
+	session, err := finalClient.NewSession()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "flyssh: create rsync transport session: %v\n", err)
+		return 255
+	}
+	defer session.Close()
+
+	session.Stdin = os.Stdin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+
+	if err := session.Run(transfer.BuildRemoteRsyncCommand(args[1:])); err != nil {
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			return exitErr.ExitStatus()
+		}
+		fmt.Fprintf(os.Stderr, "flyssh: run remote rsync server: %v\n", err)
+		return 255
+	}
+	return 0
 }
 
 // keepAliveUntil sends keepalives until stop channel is closed

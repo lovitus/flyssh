@@ -88,6 +88,12 @@ type Options struct {
 	// Per-hop keys/passwords (comma-separated, empty slots = skip)
 	KeysCSV      string // --keys "key1,,key3,,,key6,"
 	PasswordsCSV string // --passwords "pass1,,pass3"
+
+	// File transfer modes (mutually exclusive)
+	RsyncUpload   string // --rsync-upload '...'
+	RsyncDownload string // --rsync-download '...'
+	ScpUpload     string // --scp-upload '...'
+	ScpDownload   string // --scp-download '...'
 }
 
 // HopSpec describes a single hop in a multi-hop SSH chain.
@@ -177,6 +183,12 @@ Reconnect:
   --no-reconnect          Disable auto-reconnect (enabled by default with --password)
   --reconnect-delay N     Seconds between reconnect attempts (default: 3)
 
+File Transfer:
+  --rsync-upload '...'    Run rsync upload using flyssh-managed transport
+  --rsync-download '...'  Run rsync download using flyssh-managed transport
+  --scp-upload '...'      Run built-in SCP upload using current flyssh route
+  --scp-download '...'    Run built-in SCP download using current flyssh route
+
 Security Note:
   --password on the command line may be visible in shell history and
   process listings. Use --password-env or --password-file for better
@@ -257,6 +269,26 @@ func ParseArgs(args []string) (*Options, error) {
 				opts.PasswordsCSV = arg[len("--passwords="):]
 			case arg == "--no-reconnect":
 				opts.NoReconnect = true
+			case arg == "--rsync-upload" && i+1 < len(args):
+				i++
+				opts.RsyncUpload = args[i]
+			case strings.HasPrefix(arg, "--rsync-upload="):
+				opts.RsyncUpload = arg[len("--rsync-upload="):]
+			case arg == "--rsync-download" && i+1 < len(args):
+				i++
+				opts.RsyncDownload = args[i]
+			case strings.HasPrefix(arg, "--rsync-download="):
+				opts.RsyncDownload = arg[len("--rsync-download="):]
+			case arg == "--scp-upload" && i+1 < len(args):
+				i++
+				opts.ScpUpload = args[i]
+			case strings.HasPrefix(arg, "--scp-upload="):
+				opts.ScpUpload = arg[len("--scp-upload="):]
+			case arg == "--scp-download" && i+1 < len(args):
+				i++
+				opts.ScpDownload = args[i]
+			case strings.HasPrefix(arg, "--scp-download="):
+				opts.ScpDownload = arg[len("--scp-download="):]
 			case arg == "--reconnect-delay" && i+1 < len(args):
 				i++
 				d := 0
@@ -514,7 +546,48 @@ func ParseArgs(args []string) (*Options, error) {
 		opts.SecondHostPassword = opts.SecondHostPass
 	}
 
+	if err := validateTransferMode(opts); err != nil {
+		return nil, err
+	}
+
 	return opts, nil
+}
+
+func validateTransferMode(opts *Options) error {
+	count := 0
+	for _, value := range []string{
+		opts.RsyncUpload,
+		opts.RsyncDownload,
+		opts.ScpUpload,
+		opts.ScpDownload,
+	} {
+		if value != "" {
+			count++
+		}
+	}
+	if count > 1 {
+		return fmt.Errorf("transfer flags are mutually exclusive")
+	}
+	if count == 0 {
+		return nil
+	}
+	if opts.Command != "" {
+		return fmt.Errorf("transfer mode cannot be combined with a remote command")
+	}
+	if opts.NoCommand {
+		return fmt.Errorf("transfer mode cannot be combined with -N")
+	}
+	if opts.StdioForward != "" {
+		return fmt.Errorf("transfer mode cannot be combined with -W")
+	}
+	if len(opts.LocalForwards) > 0 || len(opts.RemoteForwards) > 0 || len(opts.DynamicForwards) > 0 {
+		return fmt.Errorf("transfer mode cannot be combined with port forwarding")
+	}
+	return nil
+}
+
+func (opts *Options) HasTransferMode() bool {
+	return opts.RsyncUpload != "" || opts.RsyncDownload != "" || opts.ScpUpload != "" || opts.ScpDownload != ""
 }
 
 // ParseHopSpec parses a "user[:pass]@host[:port]" string into a HopSpec.

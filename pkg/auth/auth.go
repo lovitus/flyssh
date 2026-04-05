@@ -181,6 +181,7 @@ func ensureKnownHostsFile(path string) {
 // autoAcceptHostKeyCallback wraps knownhosts callback with auto-accept/confirm logic.
 func autoAcceptHostKeyCallback(cb ssh.HostKeyCallback, knownHostsFile string, opts *cli.Options, autoAcceptNew bool) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		remote = normalizeRemoteAddr(hostname, remote)
 		err := cb(hostname, remote, key)
 		if err == nil {
 			return nil
@@ -237,6 +238,37 @@ func autoAcceptHostKeyCallback(cb ssh.HostKeyCallback, knownHostsFile string, op
 
 		return err
 	}
+}
+
+func normalizeRemoteAddr(hostname string, remote net.Addr) net.Addr {
+	if remote != nil {
+		return remote
+	}
+	host, port, err := net.SplitHostPort(hostname)
+	if err == nil {
+		return &net.TCPAddr{IP: net.ParseIP(host), Port: atoiOrZero(port)}
+	}
+	return fallbackAddr(hostname)
+}
+
+func fallbackAddr(hostname string) net.Addr {
+	return hostAddr(hostname)
+}
+
+type hostAddr string
+
+func (a hostAddr) Network() string { return "tcp" }
+func (a hostAddr) String() string  { return string(a) }
+
+func atoiOrZero(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 func isKeyError(err error, target **knownhosts.KeyError) bool {

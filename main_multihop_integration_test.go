@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -62,6 +63,220 @@ func TestConnectHop_MultiHopViaDirectTCPIP(t *testing.T) {
 	}
 }
 
+func TestBuildConnectionPlanAppliesPerHopCredentialsWithoutMutatingOptions(t *testing.T) {
+	opts := &cli.Options{
+		PasswordsCSV:  "p1,p2",
+		KeysCSV:       "k1,k2",
+		IdentityFiles: []string{"fallback"},
+		ExtraHosts:    []string{"u2@host2:2222"},
+	}
+
+	effective, hops, err := buildConnectionPlan(opts)
+	if err != nil {
+		t.Fatalf("buildConnectionPlan: %v", err)
+	}
+	if effective.Password != "p1" {
+		t.Fatalf("unexpected first-hop password: %q", effective.Password)
+	}
+	if !reflect.DeepEqual(effective.IdentityFiles, []string{"k1", "fallback"}) {
+		t.Fatalf("unexpected first-hop keys: %#v", effective.IdentityFiles)
+	}
+	if len(hops) != 1 {
+		t.Fatalf("unexpected hop count: %d", len(hops))
+	}
+	if hops[0].Password != "p2" {
+		t.Fatalf("unexpected second-hop password: %q", hops[0].Password)
+	}
+	if hops[0].KeyFile != "k2" {
+		t.Fatalf("unexpected second-hop key: %q", hops[0].KeyFile)
+	}
+
+	if opts.Password != "" {
+		t.Fatalf("original options were mutated: password=%q", opts.Password)
+	}
+	if !reflect.DeepEqual(opts.IdentityFiles, []string{"fallback"}) {
+		t.Fatalf("original options were mutated: identity files=%#v", opts.IdentityFiles)
+	}
+}
+
+func TestBuildConnectionPlanPasswordAssignments(t *testing.T) {
+	tests := []struct {
+		name         string
+		opts         *cli.Options
+		wantPassword string
+		wantHops     []string
+	}{
+		{
+			name: "single hop via passwords csv",
+			opts: &cli.Options{
+				PasswordsCSV: "p1",
+			},
+			wantPassword: "p1",
+		},
+		{
+			name: "existing first hop password wins",
+			opts: &cli.Options{
+				Password:     "inline",
+				PasswordsCSV: "csv",
+			},
+			wantPassword: "inline",
+		},
+		{
+			name: "multi hop passwords mapped by position",
+			opts: &cli.Options{
+				PasswordsCSV: "p1,p2,p3",
+				ExtraHosts: []string{
+					"u2@host2:22",
+					"u3@host3:22",
+				},
+			},
+			wantPassword: "p1",
+			wantHops:     []string{"p2", "p3"},
+		},
+		{
+			name: "blank csv entry skips hop override",
+			opts: &cli.Options{
+				PasswordsCSV: "p1,,p3",
+				ExtraHosts: []string{
+					"u2:existing@host2:22",
+					"u3@host3:22",
+				},
+			},
+			wantPassword: "p1",
+			wantHops:     []string{"existing", "p3"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			effective, hops, err := buildConnectionPlan(tc.opts)
+			if err != nil {
+				t.Fatalf("buildConnectionPlan: %v", err)
+			}
+			if effective.Password != tc.wantPassword {
+				t.Fatalf("unexpected first-hop password: got %q want %q", effective.Password, tc.wantPassword)
+			}
+			if len(hops) != len(tc.wantHops) {
+				t.Fatalf("unexpected hop count: got %d want %d", len(hops), len(tc.wantHops))
+			}
+			for i, want := range tc.wantHops {
+				if hops[i].Password != want {
+					t.Fatalf("unexpected password for hop %d: got %q want %q", i+2, hops[i].Password, want)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildConnectionPlanKeyAssignments(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       *cli.Options
+		wantKeys   []string
+		wantHopKey []string
+	}{
+		{
+			name: "single hop via keys csv",
+			opts: &cli.Options{
+				KeysCSV: "k1",
+			},
+			wantKeys: []string{"k1"},
+		},
+		{
+			name: "keys csv prepends first hop key",
+			opts: &cli.Options{
+				KeysCSV:       "k1,k2,k3",
+				IdentityFiles: []string{"fallback"},
+				ExtraHosts: []string{
+					"u2@host2:22",
+					"u3@host3:22",
+				},
+			},
+			wantKeys:   []string{"k1", "fallback"},
+			wantHopKey: []string{"k2", "k3"},
+		},
+		{
+			name: "blank keys csv entry keeps fallback hop key",
+			opts: &cli.Options{
+				KeysCSV:       "k1,,k3",
+				IdentityFiles: []string{"fallback"},
+				ExtraHosts: []string{
+					"u2@host2:22",
+					"u3@host3:22",
+				},
+			},
+			wantKeys:   []string{"k1", "fallback"},
+			wantHopKey: []string{"", "k3"},
+		},
+		{
+			name: "single identity file fans out when keys csv absent",
+			opts: &cli.Options{
+				IdentityFiles: []string{"shared"},
+				ExtraHosts: []string{
+					"u2@host2:22",
+					"u3@host3:22",
+				},
+			},
+			wantKeys:   []string{"shared"},
+			wantHopKey: []string{"shared", "shared"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			effective, hops, err := buildConnectionPlan(tc.opts)
+			if err != nil {
+				t.Fatalf("buildConnectionPlan: %v", err)
+			}
+			if !reflect.DeepEqual(effective.IdentityFiles, tc.wantKeys) {
+				t.Fatalf("unexpected first-hop keys: got %#v want %#v", effective.IdentityFiles, tc.wantKeys)
+			}
+			if len(hops) != len(tc.wantHopKey) {
+				t.Fatalf("unexpected hop count: got %d want %d", len(hops), len(tc.wantHopKey))
+			}
+			for i, want := range tc.wantHopKey {
+				if hops[i].KeyFile != want {
+					t.Fatalf("unexpected key for hop %d: got %q want %q", i+2, hops[i].KeyFile, want)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildConnectionPlanIsRepeatable(t *testing.T) {
+	opts := &cli.Options{
+		PasswordsCSV:  "p1,p2",
+		KeysCSV:       "k1,k2",
+		IdentityFiles: []string{"fallback"},
+		ExtraHosts:    []string{"u2@host2:22"},
+	}
+
+	firstEffective, firstHops, err := buildConnectionPlan(opts)
+	if err != nil {
+		t.Fatalf("first buildConnectionPlan: %v", err)
+	}
+	secondEffective, secondHops, err := buildConnectionPlan(opts)
+	if err != nil {
+		t.Fatalf("second buildConnectionPlan: %v", err)
+	}
+
+	if !reflect.DeepEqual(firstEffective.IdentityFiles, secondEffective.IdentityFiles) {
+		t.Fatalf("effective identity files changed across calls: %#v vs %#v", firstEffective.IdentityFiles, secondEffective.IdentityFiles)
+	}
+	if firstEffective.Password != secondEffective.Password {
+		t.Fatalf("effective password changed across calls: %q vs %q", firstEffective.Password, secondEffective.Password)
+	}
+	if !reflect.DeepEqual(firstHops, secondHops) {
+		t.Fatalf("hop plan changed across calls: %#v vs %#v", firstHops, secondHops)
+	}
+	if !reflect.DeepEqual(opts.IdentityFiles, []string{"fallback"}) {
+		t.Fatalf("original options mutated after repeated calls: %#v", opts.IdentityFiles)
+	}
+	if opts.Password != "" {
+		t.Fatalf("original options password mutated after repeated calls: %q", opts.Password)
+	}
+}
+
 func dialSSHForMainTest(t *testing.T, addr, user, pass string) *ssh.Client {
 	t.Helper()
 	cfg := &ssh.ClientConfig{
@@ -91,8 +306,8 @@ func TestMultiHopWithSOCKSAndMixedForwards(t *testing.T) {
 	firstPort, _ := strconv.Atoi(firstPortStr)
 
 	opts := &cli.Options{
-		Password:      "p1",
-		SocksProxy:    proxy.Addr,
+		Password:       "p1",
+		SocksProxy:     proxy.Addr,
 		ReconnectDelay: 1,
 	}
 

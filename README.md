@@ -18,6 +18,7 @@ OpenSSH 无法原生通过 SOCKS5 代理连接，通常需要借助 Proxifier、
 - **Unlimited multi-hop** — chain through N machines with one command / 一条命令穿透 N 台机器
 - **Multiplexed relay** — bypasses `MaxSessions` limits, all forwards over 1 SSH session / 复用中继绕过 MaxSessions 限制
 - **Hash-based relay caching** — relay binary uploaded once per hash, skips re-upload / 基于哈希缓存，中继只上传一次
+- **Built-in file transfer modes** — native `scp` and managed `rsync` over the same route / 内置文件传输模式，支持原生 `scp` 和托管 `rsync`
 - **Auto-reconnect** — reconnects on connection loss when credentials are non-interactive / 非交互凭据下自动重连
 - **Idle timeout** — inactive forwarded connections auto-close after 5 minutes / 空闲连接 5 分钟自动关闭
 - **Single binary** — no dependencies, cross-platform (Windows/Linux/macOS, amd64/arm64) / 单文件无依赖，跨平台
@@ -70,6 +71,10 @@ flyssh user1:pass1@hop1 user2:pass2@hop2 user3@hop3:2222
 flyssh user1:p1@hop1 user2:p2@hop2 -ltcp://:8080/127.0.0.1:80
 ```
 
+## Validation Report / 验证报告
+
+Live transfer validation notes for the current implementation are recorded in [VALIDATION_REPORT_2026-04-05.md](./VALIDATION_REPORT_2026-04-05.md).
+
 ---
 
 ## Features / 功能列表
@@ -92,6 +97,10 @@ flyssh user1:p1@hop1 user2:p2@hop2 -ltcp://:8080/127.0.0.1:80
 | Keepalive / 保活 | `-o ServerAliveInterval=N` | Periodic keepalive / 定期保活 |
 | Stdio forward / 标准流转发 | `-W host:port` | Forward stdin/stdout / 转发标准输入输出 |
 | Compression / 压缩 | `-C` | Enable compression / 启用压缩 |
+| Rsync upload / 上传 | `--rsync-upload '...'` | Managed rsync upload on current route / 使用当前链路执行 rsync 上传 |
+| Rsync download / 下载 | `--rsync-download '...'` | Managed rsync download on current route / 使用当前链路执行 rsync 下载 |
+| SCP upload / 上传 | `--scp-upload '...'` | Built-in SCP upload on current route / 使用当前链路执行内置 SCP 上传 |
+| SCP download / 下载 | `--scp-download '...'` | Built-in SCP download on current route / 使用当前链路执行内置 SCP 下载 |
 | Host key auto-accept / 自动接受指纹 | default | Auto-accept new fingerprints / 自动接受新指纹 |
 
 ---
@@ -214,6 +223,51 @@ flyssh user:password@hostname --reconnect-delay 10
   命令模式（`flyssh host "cmd"`）下，重连会重新执行该命令。
 - If you need strict one-shot command behavior, disable reconnect with `--no-reconnect`.  
   如果命令必须严格“一次执行”，请加 `--no-reconnect`。
+
+### File Transfer / 文件传输
+
+FlySsh now supports two explicit transfer modes:
+
+FlySsh 现在支持两类显式文件传输模式：
+
+- `--scp-upload '...'` / `--scp-download '...'`
+- `--rsync-upload '...'` / `--rsync-download '...'`
+
+Rules:
+
+规则：
+
+- exactly one transfer flag can be used in a command / 一次命令只能使用一个传输参数
+- transfer mode cannot be combined with remote command, `-N`, `-W`, or any `-L/-R/-D` forwarding / 传输模式不能与远程命令、`-N`、`-W` 或 `-L/-R/-D` 转发混用
+- transfer mode reuses outer FlySsh route/auth settings (SOCKS, multi-hop, `--passwords`, keys) / 传输模式复用外层 FlySsh 链路与认证（SOCKS、多跳、`--passwords`、密钥）
+- for negative auth tests, add `--no-reconnect` to avoid retry loops / 做认证失败测试时建议加 `--no-reconnect` 防止自动重试
+
+Examples:
+
+示例：
+
+```bash
+# SCP upload / download（单跳）
+flyssh user:pass@host --scp-upload './build/app.tar.gz /tmp/app.tar.gz'
+flyssh user:pass@host --scp-download '/var/log/app.log ./logs/'
+
+# SCP over multi-hop / 多跳 SCP
+flyssh u1@hop1 u2@hop2 --passwords 'p1,p2' --scp-upload './a.txt /tmp/a.txt'
+
+# rsync upload / download
+flyssh user:pass@host --rsync-upload '-avz ./site/ /srv/site/'
+flyssh user:pass@host --rsync-download '-avz /srv/site/ ./site-copy/'
+
+# rsync over multi-hop + SOCKS
+flyssh --socks 127.0.0.1:1080 u1@hop1 u2@hop2 --passwords 'p1,p2' \
+  --rsync-upload '-av ./src/ /data/src/'
+```
+
+Transfer caveat:
+
+传输注意事项：
+
+- On permission-restricted targets, `rsync` upload may return exit code `23` while files are already transferred. This is a remote filesystem behavior, not a FlySsh protocol failure. / 在权限受限目标机上，`rsync` 上传可能返回 `23`，但文件内容已到达。这通常是目标文件系统行为，不是 FlySsh 协议失败。
 
 ### Troubleshooting Logs / 排障日志
 
@@ -431,6 +485,10 @@ FlySsh Extensions:
   --password-file PATH    Read password from file / 从文件读密码
   --passwords "p1,,p3"    Per-hop passwords / 逐跳密码
   --keys "k1,,k3"         Per-hop identity files / 逐跳密钥
+  --rsync-upload '...'    Managed rsync upload / 托管 rsync 上传
+  --rsync-download '...'  Managed rsync download / 托管 rsync 下载
+  --scp-upload '...'      Built-in SCP upload / 内置 SCP 上传
+  --scp-download '...'    Built-in SCP download / 内置 SCP 下载
   --no-reconnect          Disable auto-reconnect / 禁用自动重连
   --reconnect-delay N     Reconnect delay seconds / 重连延迟秒数
 

@@ -1,5 +1,30 @@
 # Changelog / 更新日志
 
+## v1.0.6 (2026-04-05)
+
+### Features / 功能
+
+- **Built-in transfer modes added** — new `--scp-upload`, `--scp-download`, `--rsync-upload`, and `--rsync-download` modes run file transfers over existing FlySsh routes (single-hop, multi-hop, and SOCKS-supported paths) / 新增内置传输模式：`--scp-upload`、`--scp-download`、`--rsync-upload`、`--rsync-download`，可在现有 FlySsh 路由下执行文件传输（支持单跳、多跳与 SOCKS 路径）
+- **Managed rsync transport path** — FlySsh now provides an internal rsync transport bridge so outer auth/routing remains under FlySsh control while still using the local system `rsync` binary / 新增托管 rsync 传输路径：通过 FlySsh 内部桥接保持外层认证与路由控制，同时复用本地系统 `rsync`
+
+### Bug Fixes / 修复
+
+- **Fix first-hop password assignment for `--passwords`** — the first CSV entry now correctly maps to host1 in both single-hop and multi-hop flows / 修复 `--passwords` 首跳密码映射：CSV 第一项现在正确作用于首跳（单跳与多跳）
+- **Avoid option mutation during connection planning** — reconnect attempts no longer duplicate identity material due to in-place option mutations / 修复连接规划阶段参数被原地修改的问题，避免重连中密钥参数重复累积
+- **Harden host-key callback for nil remote address** — multi-hop host-key checks no longer risk panic when callback receives a nil remote endpoint / 加固主机密钥回调：多跳场景下 remote 地址为 nil 时不再有 panic 风险
+
+### Docs / 文档
+
+- **Transfer documentation completed** — README now includes transfer mode rules, constraints, end-to-end examples, and environment-specific rsync caveats / 完成传输文档：README 现已包含传输模式规则、限制、端到端示例和 rsync 环境告警说明
+- **Validation report linked and aligned** — live validation outcomes and known environment-specific behavior are documented and cross-referenced / 补全验证报告并与实现对齐：记录实机验证结果与环境侧已知行为
+
+### Verification / 验证
+
+- Automated tests: `go test ./...` / 自动化测试：`go test ./...`
+- Live checks: single-hop and multi-hop SCP/rsync transfers, plus wrong-password auth failure validation / 实机验证：单跳与多跳 SCP/rsync 传输，以及错误密码认证失败场景
+
+---
+
 ## v1.0.5 (2026-03-25)
 
 ### Bug Fixes / 修复

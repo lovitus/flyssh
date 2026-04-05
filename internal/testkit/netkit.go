@@ -148,7 +148,7 @@ func (s *SSHServer) handleSession(newChannel ssh.NewChannel) {
 			case "exec":
 				_ = req.Reply(true, nil)
 				cmd := parseExecRequest(req.Payload)
-				status := runExecCommand(cmd, ch)
+				status := runExecCommand(cmd, ch, ch, ch.Stderr())
 				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: status}))
 				return
 			case "shell":
@@ -161,13 +161,14 @@ func (s *SSHServer) handleSession(newChannel ssh.NewChannel) {
 	}()
 }
 
-func runExecCommand(command string, out io.Writer) uint32 {
+func runExecCommand(command string, in io.Reader, out, errOut io.Writer) uint32 {
 	if command == "" {
 		return 0
 	}
 	cmd := exec.Command("sh", "-lc", command)
+	cmd.Stdin = in
 	cmd.Stdout = out
-	cmd.Stderr = out
+	cmd.Stderr = errOut
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return uint32(ee.ExitCode())
