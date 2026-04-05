@@ -1,5 +1,18 @@
 # Changelog / 更新日志
 
+## v1.0.13 (2026-04-06)
+
+### CI / Release
+
+- **Make release note extraction deterministic on GitHub runners** — replace the shell `awk` changelog slicer with Python UTF-8 parsing so release jobs no longer fail after successful builds and tests just because the runner failed to detect the current `## v...` section / 让 GitHub runner 上的 release note 提取更稳定：用 Python UTF-8 解析替换 shell `awk` 的 changelog 切段逻辑，避免构建和测试成功后因 runner 未正确识别当前 `## v...` 段落而导致发布失败
+
+### Verification / 验证
+
+- Local reproduction of release note extraction with `v1.0.13` changelog section
+- Prior `v1.0.12` release run already confirmed `Test` and artifact build steps passed before failing only at release note extraction / 之前的 `v1.0.12` release run 已确认测试和产物构建都通过，失败点仅在 release note 提取
+
+---
+
 ## v1.0.12 (2026-04-06)
 
 ### Bug Fixes / 修复

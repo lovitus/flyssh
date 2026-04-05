@@ -158,25 +158,42 @@ jobs:
           set -euo pipefail
 
           version="${{ steps.meta.outputs.version }}"
-          section_header="## v${version}"
+          python3 - <<'PY'
+from pathlib import Path
+import os
+import sys
 
-          awk -v hdr="${section_header}" '
-            BEGIN { in_section=0 }
-            $0 ~ /^## / {
-              if (in_section) exit
-              if ($0 == hdr || index($0, hdr " ") == 1) {
-                in_section=1
-                print
-                next
-              }
-            }
-            in_section { print }
-          ' CHANGELOG.md > RELEASE_NOTES.md
+version = os.environ["VERSION"]
+header = f"## v{version}"
+text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+lines = text.splitlines()
+
+start = None
+for i, line in enumerate(lines):
+    if line == header or line.startswith(header + " "):
+        start = i
+        break
+
+if start is None:
+    sys.stderr.write(f"No changelog section found for {header}\n")
+    sys.exit(1)
+
+end = len(lines)
+for i in range(start + 1, len(lines)):
+    if lines[i].startswith("## "):
+        end = i
+        break
+
+body = "\n".join(lines[start:end]).strip() + "\n"
+Path("RELEASE_NOTES.md").write_text(body, encoding="utf-8")
+PY
 
           if [[ ! -s RELEASE_NOTES.md ]]; then
-            echo "No changelog section found for ${section_header}" >&2
+            echo "No changelog section found for ## v${version}" >&2
             exit 1
           fi
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
