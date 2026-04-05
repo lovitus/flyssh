@@ -1,5 +1,18 @@
 # Changelog / 更新日志
 
+## v1.0.7 (2026-04-05)
+
+### Bug Fixes / 修复
+
+- **Fix SCP stderr data race under `-race`** — replace unsynchronized stderr capture buffer in SCP transfer sessions with a lock-protected buffer, removing concurrent read/write races detected in CI race runs / 修复 `-race` 下 SCP stderr 数据竞争：将 SCP 会话中的 stderr 缓冲改为加锁实现，消除 CI 竞态检测发现的并发读写问题
+
+### Verification / 验证
+
+- `go test ./...`
+- `go test -race ./...`
+
+---
+
 ## v1.0.6 (2026-04-05)
 
 ### Features / 功能
