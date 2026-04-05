@@ -1,5 +1,18 @@
 # Changelog / 更新日志
 
+## v1.0.15 (2026-04-06)
+
+### CI / Release
+
+- **Retag release on the corrected workflow commit** — `v1.0.14` was accidentally created from an older commit before the workflow fix landed, so `v1.0.15` republishes the same intended release content from the commit that includes both the deterministic release-note extraction and the YAML indentation fix / 在修正后的 workflow 提交上重新打版：`v1.0.14` 误打到了 workflow 修复落地前的旧提交，因此 `v1.0.15` 会从包含“稳定 release note 提取”和 “YAML 缩进修复”两项变更的正确提交重新发布相同的预期内容
+
+### Verification / 验证
+
+- Confirmed current `HEAD` is [d2c1a5b](/Users/fanli/flyssh/.git/refs/heads/main) with the workflow fix
+- Confirmed remote `v1.0.14` tag points to an older commit and therefore cannot produce the intended release / 已确认远端 `v1.0.14` 标签指向旧提交，因此无法生成预期 release
+
+---
+
 ## v1.0.14 (2026-04-06)
 
 ### CI / Release
