@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.16 (2026-04-12)
+
+### Fixes / 修复
+
+- **Propagate SSH host-key options to later multi-hop hops** — follow-up hops now resolve their own SSH config and CLI `-o` overrides instead of using a hand-built partial config, so `StrictHostKeyChecking=no`, `UserKnownHostsFile=/dev/null`, and similar host-key settings work consistently beyond the first hop / 修复多跳后续 hop 未继承 SSH 主机密钥相关配置的问题：后续跳点现在会重新解析各自的 SSH 配置与 CLI `-o` 覆盖项，而不再使用手工拼接的不完整配置，因此 `StrictHostKeyChecking=no`、`UserKnownHostsFile=/dev/null` 等设置不再只对第一跳生效
+- **Keep per-hop key selection isolated** — when `--keys` is used, later hops no longer accidentally inherit the first hop's explicit key while still honoring a hop-specific key assignment / 修复逐跳密钥隔离：使用 `--keys` 时，后续 hop 不会再意外继承第一跳的显式密钥，同时仍会正确使用分配给该 hop 的专属密钥
+
+### Verification / 验证
+
+- Added regression coverage in [main_multihop_integration_test.go](/Users/fanli/flyssh/main_multihop_integration_test.go) for per-hop SSH option inheritance and key isolation
+- `go test ./...`
+- `go test -race ./...`
+- Live repro with `node2 -> node3`: `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` now reaches `node3` successfully without a second-hop changed-key prompt / 实机验证 `node2 -> node3`：带 `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` 时已可直接到达 `node3`，不会再出现第二跳 changed-key 提示
+
+---
+
 ## v1.0.15 (2026-04-06)
 
 ### CI / Release

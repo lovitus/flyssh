@@ -168,6 +168,69 @@ func TestBuildConnectionPlanPasswordAssignments(t *testing.T) {
 	}
 }
 
+func TestResolveHopSSHConfigAppliesPerHopSSHOptions(t *testing.T) {
+	knownHostsFile := t.TempDir() + "/known_hosts"
+	opts := &cli.Options{
+		ConfigFile:   "/nonexistent",
+		IdentityFiles: []string{"global-key"},
+		SSHOptions: map[string]string{
+			"StrictHostKeyChecking": "no",
+			"UserKnownHostsFile":   knownHostsFile,
+			"ConnectTimeout":       "7",
+		},
+		KeysCSV: "first-hop-key,second-hop-key",
+	}
+
+	hopCfg := resolveHopSSHConfig(opts, cli.HopSpec{
+		User:    "u2",
+		Host:    "192.0.2.20",
+		Port:    2222,
+		KeyFile: "second-hop-key",
+	})
+
+	if hopCfg.User != "u2" {
+		t.Fatalf("unexpected user: %q", hopCfg.User)
+	}
+	if hopCfg.Hostname != "192.0.2.20" {
+		t.Fatalf("unexpected hostname: %q", hopCfg.Hostname)
+	}
+	if hopCfg.Port != 2222 {
+		t.Fatalf("unexpected port: %d", hopCfg.Port)
+	}
+	if hopCfg.StrictHostKeyChecking != "no" {
+		t.Fatalf("unexpected StrictHostKeyChecking: %q", hopCfg.StrictHostKeyChecking)
+	}
+	if hopCfg.KnownHostsFile != knownHostsFile {
+		t.Fatalf("unexpected known_hosts file: %q", hopCfg.KnownHostsFile)
+	}
+	if hopCfg.ConnectTimeout != 7*time.Second {
+		t.Fatalf("unexpected timeout: %s", hopCfg.ConnectTimeout)
+	}
+	if !reflect.DeepEqual(hopCfg.IdentityFiles[:1], []string{"second-hop-key"}) {
+		t.Fatalf("unexpected identity files prefix: %#v", hopCfg.IdentityFiles)
+	}
+}
+
+func TestResolveHopSSHConfigDoesNotLeakFirstHopKeyFromKeysCSV(t *testing.T) {
+	opts := &cli.Options{
+		ConfigFile:   "/nonexistent",
+		IdentityFiles: []string{"first-hop-key"},
+		KeysCSV:      "first-hop-key,",
+	}
+
+	hopCfg := resolveHopSSHConfig(opts, cli.HopSpec{
+		User: "u2",
+		Host: "192.0.2.21",
+		Port: 22,
+	})
+
+	for _, key := range hopCfg.IdentityFiles {
+		if key == "first-hop-key" {
+			t.Fatalf("first hop key leaked into later hop identity files: %#v", hopCfg.IdentityFiles)
+		}
+	}
+}
+
 func TestBuildConnectionPlanKeyAssignments(t *testing.T) {
 	tests := []struct {
 		name       string

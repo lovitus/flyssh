@@ -23,7 +23,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "1.0.15"
+var Version = "1.0.16"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
@@ -469,23 +469,50 @@ func connectFirstHost(sshConfig *config.ResolvedConfig, opts *cli.Options) (*ssh
 	return ssh.NewClient(sshConn, chans, reqs), nil
 }
 
+func resolveHopSSHConfig(opts *cli.Options, hop cli.HopSpec) *config.ResolvedConfig {
+	hopOpts := cloneCLIOptions(opts)
+	hopOpts.Host = hop.Host
+	hopOpts.User = hop.User
+	hopOpts.Port = hop.Port
+	hopOpts.Password = ""
+	hopOpts.PasswordEnv = ""
+	hopOpts.PasswordFile = ""
+	hopOpts.SecondHost = ""
+	hopOpts.SecondHostKey = ""
+	hopOpts.SecondHostPass = ""
+	hopOpts.SecondHostUser = ""
+	hopOpts.SecondHostPassword = ""
+	hopOpts.SecondHostHostname = ""
+	hopOpts.SecondHostPort = 0
+	hopOpts.ExtraHosts = nil
+	hopOpts.PasswordsCSV = ""
+
+	switch {
+	case hop.KeyFile != "":
+		hopOpts.IdentityFiles = []string{hop.KeyFile}
+		hopOpts.KeysCSV = ""
+	case opts.KeysCSV != "":
+		// Per-hop keys were already assigned into HopSpec during planning.
+		// Avoid leaking the first hop's explicit key into later hops.
+		hopOpts.IdentityFiles = nil
+		hopOpts.KeysCSV = ""
+	}
+
+	hopCfg := config.LoadSSHConfig(hopOpts)
+	hopCfg.User = hop.User
+	hopCfg.Hostname = hop.Host
+	if hop.Port > 0 {
+		hopCfg.Port = hop.Port
+	}
+
+	return hopCfg
+}
+
 // connectHop connects to a hop through the previous SSH client.
 // hopNum is for logging (2 = second host, 3 = third, etc.)
 func connectHop(prevClient *ssh.Client, hop cli.HopSpec, opts *cli.Options, hopNum int) (*ssh.Client, error) {
 	addr := net.JoinHostPort(hop.Host, strconv.Itoa(hop.Port))
-
-	var identityFiles []string
-	if hop.KeyFile != "" {
-		identityFiles = []string{hop.KeyFile}
-	}
-
-	hopCfg := &config.ResolvedConfig{
-		User:           hop.User,
-		Hostname:       hop.Host,
-		Port:           hop.Port,
-		IdentityFiles:  identityFiles,
-		ConnectTimeout: 30 * time.Second,
-	}
+	hopCfg := resolveHopSSHConfig(opts, hop)
 
 	hopAuthMethods, err := auth.BuildAuthMethodsForHop(hopCfg, opts, hop.Password)
 	if err != nil {
@@ -496,7 +523,7 @@ func connectHop(prevClient *ssh.Client, hop cli.HopSpec, opts *cli.Options, hopN
 		User:            hop.User,
 		Auth:            hopAuthMethods,
 		HostKeyCallback: auth.GetHostKeyCallback(hopCfg, opts),
-		Timeout:         30 * time.Second,
+		Timeout:         hopCfg.ConnectTimeout,
 	}
 
 	if opts.Verbose {
