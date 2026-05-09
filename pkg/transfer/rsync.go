@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/flyssh/flyssh/pkg/auth"
@@ -106,13 +107,15 @@ func buildRsyncCommandArgs(spec *Spec, executable string) []string {
 
 	switch spec.Direction {
 	case DirectionUpload:
-		args = append(args, spec.Sources...)
+		for _, src := range spec.Sources {
+			args = append(args, rsyncSafeLocalPath(src))
+		}
 		args = append(args, buildInternalRemoteOperand(spec.Target))
 	case DirectionDownload:
 		for _, source := range spec.Sources {
 			args = append(args, buildInternalRemoteOperand(source))
 		}
-		args = append(args, spec.Target)
+		args = append(args, rsyncSafeLocalPath(spec.Target))
 	}
 	return args
 }
@@ -123,6 +126,17 @@ func buildRsyncTransportCommand(executable string) string {
 
 func buildInternalRemoteOperand(path string) string {
 	return rsyncPlaceholderHost + ":" + path
+}
+
+// rsyncSafeLocalPath prefixes Windows drive-letter paths (e.g. E:\foo) with
+// "./" so rsync does not misinterpret the drive letter + colon as a remote
+// host specification.
+func rsyncSafeLocalPath(p string) string {
+	if runtime.GOOS == "windows" && len(p) >= 2 && p[1] == ':' &&
+		((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) {
+		return "./" + p
+	}
+	return p
 }
 
 func cloneOptions(opts *cli.Options) *cli.Options {
