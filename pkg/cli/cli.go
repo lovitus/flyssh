@@ -94,6 +94,11 @@ type Options struct {
 	RsyncDownload string // --rsync-download '...'
 	ScpUpload     string // --scp-upload '...'
 	ScpDownload   string // --scp-download '...'
+
+	// Windows companion GUI and hidden GUI subprocess commands
+	Wingui          bool   // --wingui
+	GuiInternalHome bool   // --gui-internal-home
+	GuiInternalList string // --gui-internal-list DIR
 }
 
 // HopSpec describes a single hop in a multi-hop SSH chain.
@@ -188,6 +193,7 @@ File Transfer:
   --rsync-download '...'  Run rsync download using flyssh-managed transport
   --scp-upload '...'      Run built-in SCP upload using current flyssh route
   --scp-download '...'    Run built-in SCP download using current flyssh route
+  --wingui                Launch Windows companion transfer GUI
 
 Security Note:
   --password on the command line may be visible in shell history and
@@ -269,6 +275,22 @@ func ParseArgs(args []string) (*Options, error) {
 				opts.PasswordsCSV = arg[len("--passwords="):]
 			case arg == "--no-reconnect":
 				opts.NoReconnect = true
+			case arg == "--wingui":
+				opts.Wingui = true
+			case arg == "--gui-internal-home":
+				opts.GuiInternalHome = true
+			case arg == "--gui-internal-list" && i+1 < len(args):
+				i++
+				if args[i] == "" {
+					return nil, fmt.Errorf("--gui-internal-list requires a directory")
+				}
+				opts.GuiInternalList = args[i]
+			case strings.HasPrefix(arg, "--gui-internal-list="):
+				value := arg[len("--gui-internal-list="):]
+				if value == "" {
+					return nil, fmt.Errorf("--gui-internal-list requires a directory")
+				}
+				opts.GuiInternalList = value
 			case arg == "--rsync-upload" && i+1 < len(args):
 				i++
 				opts.RsyncUpload = args[i]
@@ -546,11 +568,59 @@ func ParseArgs(args []string) (*Options, error) {
 		opts.SecondHostPassword = opts.SecondHostPass
 	}
 
+	if err := validateGuiMode(opts); err != nil {
+		return nil, err
+	}
 	if err := validateTransferMode(opts); err != nil {
 		return nil, err
 	}
 
 	return opts, nil
+}
+
+func validateGuiMode(opts *Options) error {
+	if opts.Wingui && opts.HasGUIInternalMode() {
+		return fmt.Errorf("--wingui cannot be combined with GUI internal flags")
+	}
+	if opts.Wingui {
+		if opts.HasTransferMode() {
+			return fmt.Errorf("--wingui cannot be combined with transfer flags")
+		}
+		if opts.Command != "" {
+			return fmt.Errorf("--wingui cannot be combined with a remote command")
+		}
+		if opts.NoCommand {
+			return fmt.Errorf("--wingui cannot be combined with -N")
+		}
+		if opts.StdioForward != "" {
+			return fmt.Errorf("--wingui cannot be combined with -W")
+		}
+		if len(opts.LocalForwards) > 0 || len(opts.RemoteForwards) > 0 || len(opts.DynamicForwards) > 0 {
+			return fmt.Errorf("--wingui cannot be combined with port forwarding")
+		}
+	}
+	if !opts.HasGUIInternalMode() {
+		return nil
+	}
+	if opts.GuiInternalHome && opts.GuiInternalList != "" {
+		return fmt.Errorf("GUI internal flags are mutually exclusive")
+	}
+	if opts.HasTransferMode() {
+		return fmt.Errorf("GUI internal mode cannot be combined with transfer flags")
+	}
+	if opts.Command != "" {
+		return fmt.Errorf("GUI internal mode cannot be combined with a remote command")
+	}
+	if opts.NoCommand {
+		return fmt.Errorf("GUI internal mode cannot be combined with -N")
+	}
+	if opts.StdioForward != "" {
+		return fmt.Errorf("GUI internal mode cannot be combined with -W")
+	}
+	if len(opts.LocalForwards) > 0 || len(opts.RemoteForwards) > 0 || len(opts.DynamicForwards) > 0 {
+		return fmt.Errorf("GUI internal mode cannot be combined with port forwarding")
+	}
+	return nil
 }
 
 func validateTransferMode(opts *Options) error {
@@ -588,6 +658,10 @@ func validateTransferMode(opts *Options) error {
 
 func (opts *Options) HasTransferMode() bool {
 	return opts.RsyncUpload != "" || opts.RsyncDownload != "" || opts.ScpUpload != "" || opts.ScpDownload != ""
+}
+
+func (opts *Options) HasGUIInternalMode() bool {
+	return opts.GuiInternalHome || opts.GuiInternalList != ""
 }
 
 // ParseHopSpec parses a "user[:pass]@host[:port]" string into a HopSpec.
@@ -729,7 +803,11 @@ func splitFirstUnescaped(s string, sep byte) (left, right string, found bool) {
 	return s, "", false
 }
 
-// unescapeStr removes backslash escaping and surrounding quotes from a string.
+// unescapeStr removes backslash escaping and all quote characters (single and
+// double) from a string. It is intended for use with splitFirstUnescaped /
+// splitOnUnescaped, which already handle quote-context-aware splitting; after
+// splitting, the quote delimiters themselves are stripped here.
+// Note: a literal quote inside a password must be backslash-escaped (e.g. \').
 func unescapeStr(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

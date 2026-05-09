@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## v1.0.17 (2026-05-10)
+
+### Bug Fixes / 修复
+
+- **Fix SOCKS5 dynamic forward partial-read and buffer overflow** — the built-in SOCKS5 server now uses `io.ReadFull` for all protocol reads instead of `conn.Read`, preventing partial-read misparses on slow or fragmented TCP streams; domain-name address reads are also moved to a dedicated buffer to avoid a panic when the domain length approaches the 255-byte SOCKS5 maximum / 修复动态转发内置 SOCKS5 服务端的协议读取问题：所有协议读取改用 `io.ReadFull`，防止 TCP 分片导致的协议解析错误；域名地址读取移至独立缓冲区，避免域名接近 255 字节上限时发生越界 panic
+- **Strip version flags from GUI transfer subprocesses** — `buildChildArgs` now filters `--version` and `-V` in addition to `--wingui`, so transfer and browse child processes no longer exit at the version-print branch in `main.go` / GUI 传输子进程不再携带版本标志：`buildChildArgs` 现在同时过滤 `--version` 和 `-V`，避免子进程在 `main.go` 的版本打印分支提前退出
+- **Fix `unescapeStr` comment accuracy** — the doc comment now correctly states that all quote characters are stripped (not just surrounding ones) and that literal quotes in passwords must be backslash-escaped / 修正 `unescapeStr` 注释描述：准确说明该函数剥除所有引号字符，密码中的字面引号需用反斜杠转义
+
+### Features / 功能
+
+- **Windows rsync detection with install hints** — on Windows, `resolveRsyncBinary` now checks `%PATH%` (including Scoop), then probes MSYS2, Cygwin, and cwRsync install directories; if rsync is still not found, actionable installation instructions are printed to stderr / Windows 下 rsync 自动探测与安装提示：依次检查 `%PATH%`（含 Scoop）、MSYS2、Cygwin、cwRsync 目录，均未找到时输出安装指引
+- **GUI rsync availability check improved** — the Windows GUI now uses the same multi-path rsync detection so the "rsync" transfer option is correctly enabled when rsync is installed outside `%PATH%` / Windows GUI rsync 可用性检测增强：复用多路径探测逻辑，rsync 安装在非 PATH 位置时也能正确启用
+
+### Verification / 验证
+
+- `go build ./...`
+- `go test -race ./...`
+
+---
+
 ## v1.0.16 (2026-04-12)
 
 ### Fixes / 修复

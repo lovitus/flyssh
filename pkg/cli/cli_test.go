@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -18,6 +20,90 @@ func TestParseArgs_TransferFlag(t *testing.T) {
 	}
 	if opts.RsyncUpload != "-avzhP ./src/ /dst/" {
 		t.Fatalf("unexpected rsync upload block: %q", opts.RsyncUpload)
+	}
+}
+
+func TestParseArgs_WinguiFlag(t *testing.T) {
+	opts, err := ParseArgs([]string{"user@host", "--wingui"})
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if !opts.Wingui {
+		t.Fatal("expected Wingui")
+	}
+	if opts.Host != "host" || opts.User != "user" {
+		t.Fatalf("unexpected host parse: %+v", opts)
+	}
+}
+
+func TestParseArgs_WinguiRejectsConflicts(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"transfer", []string{"user@host", "--wingui", "--scp-upload", "./a /b"}, "transfer flags"},
+		{"command", []string{"user@host", "--wingui", "uname"}, "remote command"},
+		{"no command", []string{"user@host", "--wingui", "-N"}, "-N"},
+		{"stdio", []string{"user@host", "--wingui", "-W", "127.0.0.1:80"}, "-W"},
+		{"local forward", []string{"user@host", "--wingui", "-L", "8080:127.0.0.1:80"}, "port forwarding"},
+		{"remote forward", []string{"user@host", "--wingui", "-R", "8080:127.0.0.1:80"}, "port forwarding"},
+		{"dynamic forward", []string{"user@host", "--wingui", "-D", "1080"}, "port forwarding"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseArgs(tt.args)
+			if err == nil {
+				t.Fatal("expected conflict error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseArgs_GUIInternalFlags(t *testing.T) {
+	opts, err := ParseArgs([]string{"user@host", "--gui-internal-list", "/tmp/a b"})
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if opts.GuiInternalList != "/tmp/a b" {
+		t.Fatalf("unexpected list dir: %q", opts.GuiInternalList)
+	}
+	if !opts.HasGUIInternalMode() {
+		t.Fatal("expected GUI internal mode")
+	}
+
+	opts, err = ParseArgs([]string{"user@host", "--gui-internal-home"})
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if !opts.GuiInternalHome {
+		t.Fatal("expected GuiInternalHome")
+	}
+}
+
+func TestPrintUsage_HidesGUIInternalFlags(t *testing.T) {
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	PrintUsage()
+	_ = w.Close()
+	os.Stderr = oldStderr
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	text := string(out)
+	if strings.Contains(text, "--gui-internal") {
+		t.Fatalf("usage exposes hidden internal flags:\n%s", text)
+	}
+	if !strings.Contains(text, "--wingui") {
+		t.Fatalf("usage does not mention --wingui:\n%s", text)
 	}
 }
 

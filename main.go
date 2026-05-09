@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/flyssh/flyssh/pkg/session"
 	"github.com/flyssh/flyssh/pkg/socks"
 	"github.com/flyssh/flyssh/pkg/transfer"
+	"github.com/flyssh/flyssh/pkg/wingui"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -169,13 +171,48 @@ func main() {
 		os.Exit(runInternalRsyncTransport(os.Args[2:]))
 	}
 
+	rawArgs := rawArgSnapshot(os.Args[1:])
+
 	// Parse args first, then immediately scrub sensitive values from argv
-	opts, err := cli.ParseArgs(os.Args[1:])
+	opts, err := cli.ParseArgs(rawArgs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
 		os.Exit(255)
 	}
 	scrubArgs()
+
+	if opts.GuiInternalHome {
+		if opts.Host == "" {
+			fmt.Fprintln(os.Stderr, "flyssh: --gui-internal-home requires a host")
+			os.Exit(255)
+		}
+		os.Exit(runGUIInternalHome(opts))
+	}
+	if opts.GuiInternalList != "" {
+		if opts.Host == "" {
+			fmt.Fprintln(os.Stderr, "flyssh: --gui-internal-list requires a host")
+			os.Exit(255)
+		}
+		os.Exit(runGUIInternalList(opts, opts.GuiInternalList))
+	}
+	if opts.Wingui {
+		if runtime.GOOS != "windows" {
+			if err := wingui.Run(opts, rawArgs); err != nil {
+				fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
+				os.Exit(255)
+			}
+			os.Exit(0)
+		}
+		if opts.Host == "" {
+			fmt.Fprintln(os.Stderr, "flyssh: --wingui requires a host")
+			os.Exit(255)
+		}
+		if err := wingui.Run(opts, rawArgs); err != nil {
+			fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
+			os.Exit(255)
+		}
+		os.Exit(0)
+	}
 
 	if opts.ShowVersion {
 		fmt.Printf("flyssh version %s (Go SSH client with SOCKS5 proxy support)\n", Version)
@@ -225,6 +262,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "flyssh: reconnect attempt #%d in %v...\n", reconnectAttempt, reconnectDelay)
 		time.Sleep(reconnectDelay)
 	}
+}
+
+func rawArgSnapshot(args []string) []string {
+	return append([]string(nil), args...)
 }
 
 // runOnce performs a single connect-session cycle.
@@ -589,6 +630,7 @@ func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.Clie
 			}
 			sshConn, chans, reqs, err := ssh.NewClientConn(conn, jumpAddr, jumpConfig)
 			if err != nil {
+				conn.Close()
 				return nil, fmt.Errorf("ssh to jump host %s: %w", jump, err)
 			}
 			currentClient = ssh.NewClient(sshConn, chans, reqs)
@@ -596,10 +638,13 @@ func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.Clie
 			// Subsequent jumps - tunnel through previous client
 			conn, err := currentClient.Dial("tcp", jumpAddr)
 			if err != nil {
+				currentClient.Close()
 				return nil, fmt.Errorf("dial through jump %s: %w", jump, err)
 			}
 			sshConn, chans, reqs, err := ssh.NewClientConn(conn, jumpAddr, jumpConfig)
 			if err != nil {
+				conn.Close()
+				currentClient.Close()
 				return nil, fmt.Errorf("ssh through jump %s: %w", jump, err)
 			}
 			currentClient = ssh.NewClient(sshConn, chans, reqs)
@@ -614,10 +659,13 @@ func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.Clie
 	targetAddr := net.JoinHostPort(sshConfig.Hostname, strconv.Itoa(sshConfig.Port))
 	conn, err := currentClient.Dial("tcp", targetAddr)
 	if err != nil {
+		currentClient.Close()
 		return nil, fmt.Errorf("dial target through jump chain: %w", err)
 	}
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, targetAddr, targetConfig)
 	if err != nil {
+		conn.Close()
+		currentClient.Close()
 		return nil, fmt.Errorf("ssh to target through jump chain: %w", err)
 	}
 	return ssh.NewClient(sshConn, chans, reqs), nil

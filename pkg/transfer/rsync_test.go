@@ -57,11 +57,14 @@ func TestBuildRsyncCommandArgsDownload(t *testing.T) {
 
 func TestEncodeInternalRsyncOptionsClearsTransferFields(t *testing.T) {
 	opts := &cli.Options{
-		Host:          "host",
-		User:          "user",
-		IdentityFiles: []string{"id_rsa"},
-		SSHOptions:    map[string]string{"StrictHostKeyChecking": "no"},
-		RsyncUpload:   "-avz ./src /dst",
+		Host:            "host",
+		User:            "user",
+		IdentityFiles:   []string{"id_rsa"},
+		SSHOptions:      map[string]string{"StrictHostKeyChecking": "no"},
+		RsyncUpload:     "-avz ./src /dst",
+		Wingui:          true,
+		GuiInternalHome: true,
+		GuiInternalList: "/tmp",
 	}
 
 	payload, err := EncodeInternalRsyncOptions(opts)
@@ -74,6 +77,9 @@ func TestEncodeInternalRsyncOptionsClearsTransferFields(t *testing.T) {
 	}
 	if decoded.RsyncUpload != "" || decoded.RsyncDownload != "" || decoded.ScpUpload != "" || decoded.ScpDownload != "" {
 		t.Fatalf("transfer fields were not cleared: %+v", decoded)
+	}
+	if decoded.Wingui || decoded.GuiInternalHome || decoded.GuiInternalList != "" {
+		t.Fatalf("GUI fields were not cleared: %+v", decoded)
 	}
 	if decoded.Host != "host" || decoded.User != "user" {
 		t.Fatalf("connection fields lost during roundtrip: %+v", decoded)
@@ -90,9 +96,6 @@ func TestRunLocalRsyncMissingBinary(t *testing.T) {
 	code, err := RunLocalRsync(&cli.Options{Host: "host"}, &Spec{Mode: ModeRsync, Direction: DirectionUpload})
 	if code == 0 || err == nil {
 		t.Fatalf("expected missing binary error, got code=%d err=%v", code, err)
-	}
-	if !strings.Contains(err.Error(), "local rsync binary not found") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

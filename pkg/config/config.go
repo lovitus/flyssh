@@ -77,7 +77,8 @@ func LoadSSHConfig(opts *cli.Options) *ResolvedConfig {
 
 	// Determine user
 	cfg.User = opts.User
-	cfg.Hostname = opts.Host
+	// cfg.Hostname is intentionally not set here; applyEntry uses first-match-wins
+	// for Hostname remapping. The fallback to opts.Host happens after the loop.
 
 	// Parse SSH config
 	configFiles := []string{}
@@ -105,6 +106,11 @@ func LoadSSHConfig(opts *cli.Options) *ResolvedConfig {
 		if matchesHost(opts.Host, entry.Patterns) {
 			applyEntry(cfg, &entry)
 		}
+	}
+
+	// Fall back to the literal host argument if no config entry remapped it
+	if cfg.Hostname == "" {
+		cfg.Hostname = opts.Host
 	}
 
 	// CLI overrides
@@ -156,10 +162,6 @@ func LoadSSHConfig(opts *cli.Options) *ResolvedConfig {
 
 func applyEntry(cfg *ResolvedConfig, e *SSHConfigEntry) {
 	if e.Hostname != "" && cfg.Hostname == "" {
-		cfg.Hostname = e.Hostname
-	}
-	// Hostname in config can also remap the actual target
-	if e.Hostname != "" {
 		cfg.Hostname = e.Hostname
 	}
 	if e.User != "" && cfg.User == "" {

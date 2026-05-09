@@ -1,0 +1,896 @@
+//go:build windows
+
+package wingui
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+	"unsafe"
+
+	"github.com/flyssh/flyssh/pkg/cli"
+	"github.com/lxn/walk"
+	. "github.com/lxn/walk/declarative"
+	"golang.org/x/sys/windows"
+)
+
+type side string
+
+const (
+	sideNone   side = ""
+	sideLocal  side = "local"
+	sideRemote side = "remote"
+)
+
+type fileEntry struct {
+	Name    string
+	IsDir   bool
+	Display string
+}
+
+type navState struct {
+	Current string
+	Back    []string
+	Forward []string
+}
+
+func (n *navState) commit(next string) {
+	if next == "" || next == n.Current {
+		return
+	}
+	if n.Current != "" {
+		n.Back = append(n.Back, n.Current)
+	}
+	n.Current = next
+	n.Forward = nil
+}
+
+func (n *navState) goBack() string {
+	if len(n.Back) == 0 {
+		return n.Current
+	}
+	prev := n.Back[len(n.Back)-1]
+	n.Back = n.Back[:len(n.Back)-1]
+	if n.Current != "" {
+		n.Forward = append(n.Forward, n.Current)
+	}
+	n.Current = prev
+	return n.Current
+}
+
+func (n *navState) goForward() string {
+	if len(n.Forward) == 0 {
+		return n.Current
+	}
+	next := n.Forward[len(n.Forward)-1]
+	n.Forward = n.Forward[:len(n.Forward)-1]
+	if n.Current != "" {
+		n.Back = append(n.Back, n.Current)
+	}
+	n.Current = next
+	return n.Current
+}
+
+type selectionState struct {
+	Side  side
+	Files map[string]bool
+	Dir   string
+}
+
+func newSelectionState() selectionState {
+	return selectionState{Files: make(map[string]bool)}
+}
+
+func (s selectionState) valid() bool {
+	return s.Side != sideNone && (s.Dir != "" || len(s.Files) > 0)
+}
+
+func (s selectionState) fileNames() []string {
+	names := make([]string, 0, len(s.Files))
+	for name := range s.Files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+type childProcess struct {
+	cmd  *exec.Cmd
+	job  windows.Handle
+	once sync.Once
+}
+
+func (c *childProcess) wait() error {
+	err := c.cmd.Wait()
+	c.closeJob()
+	return err
+}
+
+func (c *childProcess) kill() {
+	c.closeJob()
+	if c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
+	}
+}
+
+func (c *childProcess) closeJob() {
+	c.once.Do(func() {
+		if c.job != 0 {
+			_ = windows.CloseHandle(c.job)
+		}
+	})
+}
+
+type app struct {
+	opts    *cli.Options
+	rawArgs []string
+	exe     string
+
+	mw         *walk.MainWindow
+	status     *walk.LineEdit
+	summary    *walk.LineEdit
+	localPath  *walk.LineEdit
+	remotePath *walk.LineEdit
+	localLB    *walk.ListBox
+	remoteLB   *walk.ListBox
+	protocol   *walk.ComboBox
+	transfer   *walk.PushButton
+	log        *walk.TextEdit
+
+	mu                sync.Mutex
+	localNav          navState
+	remoteNav         navState
+	localItems        []fileEntry
+	remoteItems       []fileEntry
+	selection         selectionState
+	busy              bool
+	rsyncAvailable    bool
+	current           *childProcess
+	suppressSelection bool
+}
+
+func Run(opts *cli.Options, rawArgs []string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	_, rsyncErr := resolveRsyncBinary()
+	a := &app{
+		opts:           opts,
+		rawArgs:        append([]string(nil), rawArgs...),
+		exe:            exe,
+		localNav:       navState{Current: cwd},
+		selection:      newSelectionState(),
+		rsyncAvailable: rsyncErr == nil,
+	}
+	return a.run()
+}
+
+func (a *app) run() error {
+	if err := (MainWindow{
+		AssignTo: &a.mw,
+		Title:    "FlySSH Transfer",
+		MinSize:  Size{Width: 980, Height: 680},
+		Layout:   VBox{},
+		Children: []Widget{
+			Composite{Layout: Grid{Columns: 5}, Children: []Widget{
+				Label{Text: "Connection"},
+				LineEdit{AssignTo: &a.summary, ReadOnly: true, ColumnSpan: 3},
+				LineEdit{AssignTo: &a.status, ReadOnly: true},
+				Label{Text: "Remote Path"},
+				LineEdit{AssignTo: &a.remotePath, ColumnSpan: 3, OnKeyDown: func(key walk.Key) {
+					if key == walk.KeyReturn {
+						a.gotoRemotePath(a.remotePath.Text())
+					}
+				}},
+				PushButton{Text: "Refresh", OnClicked: a.refreshRemote},
+			}},
+			Composite{Layout: HBox{}, Children: []Widget{
+				Composite{Layout: VBox{}, StretchFactor: 1, Children: []Widget{
+					Label{Text: "Local"},
+					Composite{Layout: HBox{}, Children: []Widget{
+						PushButton{Text: "Back", OnClicked: a.localBack},
+						PushButton{Text: "Forward", OnClicked: a.localForward},
+						PushButton{Text: "Up", OnClicked: a.localUp},
+						PushButton{Text: "Refresh", OnClicked: a.refreshLocal},
+					}},
+					LineEdit{AssignTo: &a.localPath, OnKeyDown: func(key walk.Key) {
+						if key == walk.KeyReturn {
+							a.gotoLocalPath(a.localPath.Text())
+						}
+					}},
+					ListBox{AssignTo: &a.localLB, MultiSelection: true, StretchFactor: 1,
+						OnSelectedIndexesChanged: a.localSelectionChanged,
+						OnItemActivated:          a.localActivate},
+				}},
+				Composite{Layout: VBox{}, StretchFactor: 1, Children: []Widget{
+					Label{Text: "Remote"},
+					Composite{Layout: HBox{}, Children: []Widget{
+						PushButton{Text: "Back", OnClicked: a.remoteBack},
+						PushButton{Text: "Forward", OnClicked: a.remoteForward},
+						PushButton{Text: "Up", OnClicked: a.remoteUp},
+						PushButton{Text: "Refresh", OnClicked: a.refreshRemote},
+					}},
+					ListBox{AssignTo: &a.remoteLB, MultiSelection: true, StretchFactor: 1,
+						OnSelectedIndexesChanged: a.remoteSelectionChanged,
+						OnItemActivated:          a.remoteActivate},
+				}},
+			}},
+			Composite{Layout: HBox{}, Children: []Widget{
+				ComboBox{AssignTo: &a.protocol, Model: []string{"scp", "rsync"}, CurrentIndex: 0, OnCurrentIndexChanged: a.setButtons},
+				PushButton{AssignTo: &a.transfer, Text: "Transfer", OnClicked: a.startTransfer},
+			}},
+			TextEdit{AssignTo: &a.log, ReadOnly: true, MinSize: Size{Height: 120}},
+		},
+	}).Create(); err != nil {
+		return err
+	}
+	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		a.killCurrent()
+	})
+	a.summary.SetText(connectionSummary(a.opts))
+	a.localPath.SetText(a.localNav.Current)
+	if !a.rsyncAvailable {
+		a.appendLogLine("rsync disabled: local rsync binary not found in PATH")
+	}
+	a.refreshLocal()
+	a.setButtons()
+	go a.initializeRemote()
+	a.mw.Run()
+	return nil
+}
+
+func (a *app) initializeRemote() {
+	if !a.startOperation() {
+		return
+	}
+	defer a.endOperation()
+	home, err := a.runBrowseHome()
+	target := strings.TrimSpace(home)
+	if err != nil || target == "" {
+		if err != nil {
+			a.appendLogLine("remote HOME failed: " + err.Error())
+		}
+		target = "/tmp"
+	}
+	if err := a.loadRemoteUnderOperation(target); err != nil {
+		a.setStatus("remote list failed: " + err.Error())
+		return
+	}
+	a.mu.Lock()
+	a.remoteNav = navState{Current: target}
+	a.mu.Unlock()
+	a.setStatus("ready")
+}
+
+func (a *app) refreshLocal() {
+	a.mu.Lock()
+	dir := a.localNav.Current
+	a.mu.Unlock()
+	items, err := listLocal(dir)
+	if err != nil {
+		a.setStatus("local list failed: " + err.Error())
+		return
+	}
+	a.mu.Lock()
+	a.localItems = items
+	a.selection = newSelectionState()
+	a.mu.Unlock()
+	a.ui(func() {
+		a.localPath.SetText(dir)
+		a.localLB.SetModel(entryDisplays(items))
+		a.localLB.SetSelectedIndexes(nil)
+		a.remoteLB.SetSelectedIndexes(nil)
+	})
+	a.setButtons()
+}
+
+func (a *app) refreshRemote() {
+	go func() {
+		if !a.startOperation() {
+			return
+		}
+		defer a.endOperation()
+		a.mu.Lock()
+		dir := a.remoteNav.Current
+		a.mu.Unlock()
+		if err := a.loadRemoteUnderOperation(dir); err != nil {
+			a.setStatus("remote list failed: " + err.Error())
+		}
+	}()
+}
+
+func (a *app) loadRemoteUnderOperation(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("empty remote directory")
+	}
+	items, err := a.runBrowseList(dir)
+	if err != nil {
+		return err
+	}
+	entries := make([]fileEntry, 0, len(items))
+	for _, item := range items {
+		entries = append(entries, fileEntry{Name: item.Name, IsDir: item.IsDir, Display: displayName(item.Name, item.IsDir)})
+	}
+	a.mu.Lock()
+	a.remoteItems = entries
+	a.selection = newSelectionState()
+	a.mu.Unlock()
+	a.ui(func() {
+		a.remotePath.SetText(dir)
+		a.remoteLB.SetModel(entryDisplays(entries))
+		a.localLB.SetSelectedIndexes(nil)
+		a.remoteLB.SetSelectedIndexes(nil)
+	})
+	a.setButtons()
+	return nil
+}
+
+func (a *app) runBrowseHome() (string, error) {
+	out, _, err := a.runChild(buildChildArgs(a.rawArgs, "--gui-internal-home"), true)
+	return string(out), err
+}
+
+func (a *app) runBrowseList(dir string) ([]remoteEntry, error) {
+	out, _, err := a.runChild(buildChildArgs(a.rawArgs, "--gui-internal-list", dir), true)
+	if err != nil {
+		return nil, err
+	}
+	var entries []remoteEntry
+	if err := json.Unmarshal(out, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (a *app) gotoLocalPath(dir string) {
+	a.mu.Lock()
+	next := a.localNav
+	a.mu.Unlock()
+	next.commit(dir)
+	if err := validateLocalDir(dir); err != nil {
+		a.setStatus("local path failed: " + err.Error())
+		return
+	}
+	a.mu.Lock()
+	a.localNav = next
+	a.mu.Unlock()
+	a.refreshLocal()
+}
+
+func (a *app) gotoRemotePath(dir string) {
+	a.mu.Lock()
+	next := a.remoteNav
+	current := a.remoteNav.Current
+	a.mu.Unlock()
+	next.commit(dir)
+	go func() {
+		if !a.startOperation() {
+			return
+		}
+		defer a.endOperation()
+		if err := a.loadRemoteUnderOperation(dir); err != nil {
+			a.setStatus("remote path failed: " + err.Error())
+			a.ui(func() { a.remotePath.SetText(current) })
+			return
+		}
+		a.mu.Lock()
+		a.remoteNav = next
+		a.mu.Unlock()
+	}()
+}
+
+func (a *app) localBack() {
+	a.mu.Lock()
+	next := a.localNav
+	a.mu.Unlock()
+	dir := next.goBack()
+	if err := validateLocalDir(dir); err != nil {
+		a.setStatus("local path failed: " + err.Error())
+		return
+	}
+	a.mu.Lock()
+	a.localNav = next
+	a.mu.Unlock()
+	a.refreshLocal()
+}
+
+func (a *app) localForward() {
+	a.mu.Lock()
+	next := a.localNav
+	a.mu.Unlock()
+	dir := next.goForward()
+	if err := validateLocalDir(dir); err != nil {
+		a.setStatus("local path failed: " + err.Error())
+		return
+	}
+	a.mu.Lock()
+	a.localNav = next
+	a.mu.Unlock()
+	a.refreshLocal()
+}
+
+func (a *app) localUp() {
+	a.mu.Lock()
+	current := a.localNav.Current
+	a.mu.Unlock()
+	a.gotoLocalPath(filepath.Dir(current))
+}
+
+func (a *app) remoteBack() {
+	a.mu.Lock()
+	next := a.remoteNav
+	current := a.remoteNav.Current
+	a.mu.Unlock()
+	dir := next.goBack()
+	if dir == current {
+		return
+	}
+	a.tryRemoteNav(next, dir, current)
+}
+
+func (a *app) remoteForward() {
+	a.mu.Lock()
+	next := a.remoteNav
+	current := a.remoteNav.Current
+	a.mu.Unlock()
+	dir := next.goForward()
+	if dir == current {
+		return
+	}
+	a.tryRemoteNav(next, dir, current)
+}
+
+func (a *app) remoteUp() {
+	a.mu.Lock()
+	current := a.remoteNav.Current
+	a.mu.Unlock()
+	a.gotoRemotePath(remoteParent(current))
+}
+
+func (a *app) tryRemoteNav(next navState, dir, previous string) {
+	go func() {
+		if !a.startOperation() {
+			return
+		}
+		defer a.endOperation()
+		if err := a.loadRemoteUnderOperation(dir); err != nil {
+			a.setStatus("remote path failed: " + err.Error())
+			a.ui(func() { a.remotePath.SetText(previous) })
+			return
+		}
+		a.mu.Lock()
+		a.remoteNav = next
+		a.mu.Unlock()
+	}()
+}
+
+func (a *app) localActivate() {
+	a.mu.Lock()
+	items := append([]fileEntry(nil), a.localItems...)
+	dir := a.localNav.Current
+	a.mu.Unlock()
+	idx := a.localLB.CurrentIndex()
+	if idx >= 0 && idx < len(items) && items[idx].IsDir {
+		a.gotoLocalPath(filepath.Join(dir, items[idx].Name))
+	}
+}
+
+func (a *app) remoteActivate() {
+	a.mu.Lock()
+	items := append([]fileEntry(nil), a.remoteItems...)
+	dir := a.remoteNav.Current
+	a.mu.Unlock()
+	idx := a.remoteLB.CurrentIndex()
+	if idx >= 0 && idx < len(items) && items[idx].IsDir {
+		a.gotoRemotePath(remoteJoin(dir, items[idx].Name))
+	}
+}
+
+func (a *app) localSelectionChanged() {
+	a.mu.Lock()
+	if a.suppressSelection {
+		a.mu.Unlock()
+		return
+	}
+	items := append([]fileEntry(nil), a.localItems...)
+	a.mu.Unlock()
+	normalized := a.applySelection(sideLocal, a.localLB.SelectedIndexes(), items)
+	a.mu.Lock()
+	a.suppressSelection = true
+	a.mu.Unlock()
+	a.localLB.SetSelectedIndexes(normalized)
+	a.remoteLB.SetSelectedIndexes(nil)
+	a.mu.Lock()
+	a.suppressSelection = false
+	a.mu.Unlock()
+}
+
+func (a *app) remoteSelectionChanged() {
+	a.mu.Lock()
+	if a.suppressSelection {
+		a.mu.Unlock()
+		return
+	}
+	items := append([]fileEntry(nil), a.remoteItems...)
+	a.mu.Unlock()
+	normalized := a.applySelection(sideRemote, a.remoteLB.SelectedIndexes(), items)
+	a.mu.Lock()
+	a.suppressSelection = true
+	a.mu.Unlock()
+	a.remoteLB.SetSelectedIndexes(normalized)
+	a.localLB.SetSelectedIndexes(nil)
+	a.mu.Lock()
+	a.suppressSelection = false
+	a.mu.Unlock()
+}
+
+func (a *app) applySelection(selectedSide side, indexes []int, entries []fileEntry) []int {
+	sel := newSelectionState()
+	normalized := make([]int, 0, len(indexes))
+	for _, idx := range indexes {
+		if idx < 0 || idx >= len(entries) {
+			continue
+		}
+		entry := entries[idx]
+		if entry.IsDir {
+			sel.Side = selectedSide
+			sel.Dir = entry.Name
+			normalized = []int{idx}
+			break
+		}
+		sel.Side = selectedSide
+		sel.Files[entry.Name] = true
+		normalized = append(normalized, idx)
+	}
+	a.mu.Lock()
+	a.selection = sel
+	a.mu.Unlock()
+	a.setButtons()
+	return normalized
+}
+
+func (a *app) startTransfer() {
+	a.mu.Lock()
+	selection := a.selection
+	localDir := a.localNav.Current
+	remoteDir := a.remoteNav.Current
+	a.mu.Unlock()
+
+	protocol := "scp"
+	if idx := a.protocol.CurrentIndex(); idx == 1 {
+		protocol = "rsync"
+	}
+	upload := selection.Side == sideLocal
+	sources, target := transferPaths(selection, localDir, remoteDir)
+	flag, raw, err := buildTransferArgs(protocol, upload, selection.Dir != "", sources, target)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	args := buildChildArgs(a.rawArgs, flag, raw)
+
+	go func() {
+		if !a.startOperation() {
+			return
+		}
+		defer a.endOperation()
+		_, code, err := a.runChild(args, false)
+		if err != nil {
+			a.setStatus(fmt.Sprintf("transfer failed (%d): %v", code, err))
+			return
+		}
+		a.setStatus("transfer complete")
+		a.refreshLocal()
+		a.mu.Lock()
+		currentRemote := a.remoteNav.Current
+		a.mu.Unlock()
+		_ = a.loadRemoteUnderOperation(currentRemote)
+	}()
+}
+
+func transferPaths(sel selectionState, localDir, remoteDir string) ([]string, string) {
+	names := sel.fileNames()
+	if sel.Dir != "" {
+		names = []string{sel.Dir}
+	}
+	sources := make([]string, 0, len(names))
+	switch sel.Side {
+	case sideLocal:
+		for _, name := range names {
+			sources = append(sources, filepath.Join(localDir, name))
+		}
+		return sources, remoteDir
+	case sideRemote:
+		for _, name := range names {
+			sources = append(sources, remoteJoin(remoteDir, name))
+		}
+		return sources, localDir
+	default:
+		return nil, ""
+	}
+}
+
+func (a *app) startOperation() bool {
+	a.mu.Lock()
+	if a.busy {
+		a.mu.Unlock()
+		return false
+	}
+	a.busy = true
+	a.mu.Unlock()
+	a.setStatus(promptNotice)
+	a.setButtons()
+	return true
+}
+
+func (a *app) endOperation() {
+	a.mu.Lock()
+	a.busy = false
+	a.current = nil
+	a.mu.Unlock()
+	a.setButtons()
+}
+
+func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
+	child, stdout, stderr, err := startChild(a.exe, args)
+	if err != nil {
+		return nil, 1, err
+	}
+	a.mu.Lock()
+	a.current = child
+	a.mu.Unlock()
+	a.appendLogLine("spawn: " + childDescription(args))
+
+	var stdoutBuf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if captureStdout {
+			_, _ = io.Copy(&stdoutBuf, stdout)
+			return
+		}
+		_, _ = io.Copy(io.MultiWriter(os.Stdout, guiLogWriter{a: a}), stdout)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(io.MultiWriter(os.Stderr, guiLogWriter{a: a}), stderr)
+	}()
+
+	err = child.wait()
+	wg.Wait()
+	code := 0
+	if err != nil {
+		code = 1
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		}
+	}
+	a.appendLogLine(fmt.Sprintf("exit code: %d", code))
+	return stdoutBuf.Bytes(), code, err
+}
+
+func startChild(executable string, args []string) (*childProcess, io.ReadCloser, io.ReadCloser, error) {
+	cmd := exec.Command(executable, args...)
+	cmd.Stdin = os.Stdin
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	job, err := createKillOnCloseJob()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		_ = windows.CloseHandle(job)
+		return nil, nil, nil, err
+	}
+	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = windows.CloseHandle(job)
+		return nil, nil, nil, err
+	}
+	err = windows.AssignProcessToJobObject(job, process)
+	_ = windows.CloseHandle(process)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = windows.CloseHandle(job)
+		return nil, nil, nil, err
+	}
+	return &childProcess{cmd: cmd, job: job}, stdout, stderr, nil
+}
+
+func createKillOnCloseJob() (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, err
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	_, err = windows.SetInformationJobObject(
+		job,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)),
+		uint32(unsafe.Sizeof(info)),
+	)
+	if err != nil {
+		_ = windows.CloseHandle(job)
+		return 0, err
+	}
+	return job, nil
+}
+
+func (a *app) killCurrent() {
+	a.mu.Lock()
+	child := a.current
+	a.mu.Unlock()
+	if child != nil {
+		child.kill()
+	}
+}
+
+func (a *app) setButtons() {
+	a.mu.Lock()
+	enabled := !a.busy && a.selection.valid() && a.remoteNav.Current != ""
+	rsyncEnabled := a.rsyncAvailable
+	a.mu.Unlock()
+	a.ui(func() {
+		protocol := "scp"
+		if a.protocol.CurrentIndex() == 1 {
+			protocol = "rsync"
+		}
+		a.transfer.SetEnabled(enabled && (protocol != "rsync" || rsyncEnabled))
+	})
+}
+
+func (a *app) setStatus(status string) {
+	a.ui(func() { a.status.SetText(status) })
+	a.appendLogLine(status)
+}
+
+func (a *app) appendLogLine(line string) {
+	a.appendLogText(time.Now().Format("15:04:05") + " " + line + "\r\n")
+}
+
+func (a *app) appendLogText(text string) {
+	if text == "" {
+		return
+	}
+	a.ui(func() {
+		a.log.AppendText(text)
+	})
+}
+
+func (a *app) ui(fn func()) {
+	if a.mw != nil {
+		a.mw.Synchronize(fn)
+	}
+}
+
+type guiLogWriter struct {
+	a *app
+}
+
+func (w guiLogWriter) Write(p []byte) (int, error) {
+	text := strings.ReplaceAll(string(p), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\n", "\r\n")
+	w.a.appendLogText(text)
+	return len(p), nil
+}
+
+func listLocal(dir string) ([]fileEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]fileEntry, 0, len(entries))
+	for _, entry := range entries {
+		full := filepath.Join(dir, entry.Name())
+		info, err := os.Stat(full)
+		if err != nil {
+			info, err = entry.Info()
+			if err != nil {
+				continue
+			}
+		}
+		isDir := info.IsDir()
+		result = append(result, fileEntry{Name: entry.Name(), IsDir: isDir, Display: displayName(entry.Name(), isDir)})
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].IsDir != result[j].IsDir {
+			return result[i].IsDir
+		}
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	return result, nil
+}
+
+func validateLocalDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory")
+	}
+	return nil
+}
+
+func entryDisplays(entries []fileEntry) []string {
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, entry.Display)
+	}
+	return result
+}
+
+func remoteJoin(dir, name string) string {
+	if dir == "" || dir == "/" {
+		return "/" + name
+	}
+	return path.Join(dir, name)
+}
+
+func remoteParent(dir string) string {
+	if dir == "" || dir == "/" {
+		return "/"
+	}
+	return path.Dir(dir)
+}
+
+func connectionSummary(opts *cli.Options) string {
+	target := opts.Host
+	if opts.User != "" {
+		target = opts.User + "@" + target
+	}
+	if opts.Port > 0 {
+		target = fmt.Sprintf("%s:%d", target, opts.Port)
+	}
+	parts := []string{target}
+	if len(opts.ExtraHosts) > 0 {
+		parts = append(parts, fmt.Sprintf("%d extra hop(s)", len(opts.ExtraHosts)))
+	}
+	if opts.SocksProxy != "" {
+		parts = append(parts, "SOCKS "+opts.SocksProxy)
+	}
+	return strings.Join(parts, " via ")
+}
+
+func childDescription(args []string) string {
+	for _, arg := range args {
+		switch {
+		case arg == "--gui-internal-home":
+			return "remote HOME probe"
+		case arg == "--gui-internal-list" || strings.HasPrefix(arg, "--gui-internal-list="):
+			return "remote directory listing"
+		case arg == "--scp-upload":
+			return "SCP upload"
+		case arg == "--scp-download":
+			return "SCP download"
+		case arg == "--rsync-upload":
+			return "rsync upload"
+		case arg == "--rsync-download":
+			return "rsync download"
+		}
+	}
+	return "flyssh subprocess"
+}

@@ -101,6 +101,7 @@ Live transfer validation notes for the current implementation are recorded in [V
 | Rsync download / 下载 | `--rsync-download '...'` | Managed rsync download on current route / 使用当前链路执行 rsync 下载 |
 | SCP upload / 上传 | `--scp-upload '...'` | Built-in SCP upload on current route / 使用当前链路执行内置 SCP 上传 |
 | SCP download / 下载 | `--scp-download '...'` | Built-in SCP download on current route / 使用当前链路执行内置 SCP 下载 |
+| Windows transfer GUI / Windows 图形传输 | `--wingui` | Companion transfer panel for current route / 当前链路的图形传输面板 |
 | Host key auto-accept / 自动接受指纹 | default | Auto-accept new fingerprints / 自动接受新指纹 |
 
 ---
@@ -241,6 +242,7 @@ Rules:
 - transfer mode cannot be combined with remote command, `-N`, `-W`, or any `-L/-R/-D` forwarding / 传输模式不能与远程命令、`-N`、`-W` 或 `-L/-R/-D` 转发混用
 - transfer mode reuses outer FlySsh route/auth settings (SOCKS, multi-hop, `--passwords`, keys) / 传输模式复用外层 FlySsh 链路与认证（SOCKS、多跳、`--passwords`、密钥）
 - for negative auth tests, add `--no-reconnect` to avoid retry loops / 做认证失败测试时建议加 `--no-reconnect` 防止自动重试
+- Windows users can launch a companion transfer panel with `--wingui`; prompts still happen in the terminal / Windows 用户可以用 `--wingui` 打开图形传输面板；认证提示仍在终端完成
 
 Examples:
 
@@ -489,6 +491,7 @@ FlySsh Extensions:
   --rsync-download '...'  Managed rsync download / 托管 rsync 下载
   --scp-upload '...'      Built-in SCP upload / 内置 SCP 上传
   --scp-download '...'    Built-in SCP download / 内置 SCP 下载
+  --wingui                Windows companion transfer GUI / Windows 图形传输面板
   --no-reconnect          Disable auto-reconnect / 禁用自动重连
   --reconnect-delay N     Reconnect delay seconds / 重连延迟秒数
 

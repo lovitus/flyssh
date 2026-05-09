@@ -96,6 +96,12 @@ jobs:
       - name: Test
         run: go test -v ./...
 
+      - name: Generate Windows manifest resource
+        shell: bash
+        run: |
+          go install github.com/akavel/rsrc@latest
+          rsrc -manifest flyssh.manifest -o rsrc_windows.syso
+
       - name: Build release artifacts
         shell: bash
         run: |

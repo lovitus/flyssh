@@ -461,14 +461,23 @@ func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool, traceID
 	defer conn.Close()
 
 	// SOCKS5 handshake
-	// Read version and auth methods
-	buf := make([]byte, 258)
-	n, err := conn.Read(buf)
-	if err != nil || n < 2 {
-		if verbose && err != nil {
+	// Read version and number-of-methods
+	hdr := make([]byte, 2)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		if verbose {
 			log.Printf("[%s] dynamic forward handshake read failed: %v", traceID, err)
 		}
 		return
+	}
+	buf := make([]byte, 258)
+	copy(buf, hdr)
+	if nmethods := int(hdr[1]); nmethods > 0 {
+		if _, err := io.ReadFull(conn, buf[2:2+nmethods]); err != nil {
+			if verbose {
+				log.Printf("[%s] dynamic forward handshake methods read failed: %v", traceID, err)
+			}
+			return
+		}
 	}
 	if buf[0] != 0x05 {
 		if verbose {
@@ -480,10 +489,9 @@ func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool, traceID
 	// We only support no-auth for local SOCKS5 server
 	conn.Write([]byte{0x05, 0x00})
 
-	// Read connect request
-	n, err = conn.Read(buf)
-	if err != nil || n < 7 {
-		if verbose && err != nil {
+	// Read connect request header: VER CMD RSV ATYP (4 bytes)
+	if _, err := io.ReadFull(conn, buf[:4]); err != nil {
+		if verbose {
 			log.Printf("[%s] dynamic forward request read failed: %v", traceID, err)
 		}
 		return
@@ -503,23 +511,27 @@ func handleSocks5Client(client *ssh.Client, conn net.Conn, verbose bool, traceID
 	var addrEnd int
 
 	switch addrType {
-	case 0x01: // IPv4
-		if n < 10 {
+	case 0x01: // IPv4: 4 addr bytes + 2 port bytes
+		if _, err := io.ReadFull(conn, buf[4:10]); err != nil {
 			return
 		}
 		targetHost = net.IP(buf[4:8]).String()
 		targetPort = int(binary.BigEndian.Uint16(buf[8:10]))
 		addrEnd = 10
-	case 0x03: // Domain
-		domainLen := int(buf[4])
-		if n < 5+domainLen+2 {
+	case 0x03: // Domain: 1 len byte + domain + 2 port bytes
+		if _, err := io.ReadFull(conn, buf[4:5]); err != nil {
 			return
 		}
-		targetHost = string(buf[5 : 5+domainLen])
-		targetPort = int(binary.BigEndian.Uint16(buf[5+domainLen : 5+domainLen+2]))
+		domainLen := int(buf[4])
+		domainBuf := make([]byte, domainLen+2)
+		if _, err := io.ReadFull(conn, domainBuf); err != nil {
+			return
+		}
+		targetHost = string(domainBuf[:domainLen])
+		targetPort = int(binary.BigEndian.Uint16(domainBuf[domainLen : domainLen+2]))
 		addrEnd = 5 + domainLen + 2
-	case 0x04: // IPv6
-		if n < 22 {
+	case 0x04: // IPv6: 16 addr bytes + 2 port bytes
+		if _, err := io.ReadFull(conn, buf[4:22]); err != nil {
 			return
 		}
 		targetHost = net.IP(buf[4:20]).String()

@@ -23,8 +23,9 @@ var executablePath = os.Executable
 var startPromptBroker = auth.StartPromptBroker
 
 func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
-	if _, err := lookPath("rsync"); err != nil {
-		return 1, fmt.Errorf("local rsync binary not found in PATH")
+	rsyncBin, err := resolveRsyncBinary()
+	if err != nil {
+		return 1, err
 	}
 
 	executable, err := executablePath()
@@ -47,7 +48,7 @@ func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
 		}
 	}
 
-	cmd := exec.Command("rsync", buildRsyncCommandArgs(spec, executable)...)
+	cmd := exec.Command(rsyncBin, buildRsyncCommandArgs(spec, executable)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -69,6 +70,9 @@ func EncodeInternalRsyncOptions(opts *cli.Options) (string, error) {
 	clone.NoCommand = false
 	clone.ShowVersion = false
 	clone.Verbose = false
+	clone.Wingui = false
+	clone.GuiInternalHome = false
+	clone.GuiInternalList = ""
 	clone.RsyncUpload = ""
 	clone.RsyncDownload = ""
 	clone.ScpUpload = ""
