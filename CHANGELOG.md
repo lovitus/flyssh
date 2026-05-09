@@ -1,5 +1,13 @@
 # Changelog / 更新日志
 
+## v1.0.18 (2026-05-10)
+
+### Bug Fixes / 修复
+
+- **Fix rsync "both remote" error on Windows drive-letter paths** — local paths like `E:\folder\file` are now prefixed with `./` before being passed to rsync, preventing the drive letter + colon from being misinterpreted as a remote host specification / 修复 Windows 盘符路径被 rsync 误判为远程：本地路径如 `E:\folder\file` 在传给 rsync 前加 `./` 前缀，防止盘符冒号被当作远程主机标记
+
+---
+
 ## v1.0.17 (2026-05-10)
 
 ### Bug Fixes / 修复
