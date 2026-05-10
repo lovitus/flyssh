@@ -100,7 +100,10 @@ jobs:
         shell: bash
         run: |
           go install github.com/akavel/rsrc@latest
-          rsrc -manifest flyssh.manifest -o rsrc_windows.syso
+          # Generate arch-specific .syso so the linker only picks it up for
+          # the matching GOARCH (avoids "unknown ARM64 relocation type" on
+          # windows/arm64 builds).
+          rsrc -manifest flyssh.manifest -arch amd64 -o rsrc_windows_amd64.syso
 
       - name: Build release artifacts
         shell: bash
