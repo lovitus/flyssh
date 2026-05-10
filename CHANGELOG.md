@@ -1,5 +1,28 @@
 # Changelog / 更新日志
 
+## v1.0.19 (2026-05-10)
+
+### Bug Fixes / 修复
+
+- **Fix rsync transport on Windows — overlapped stdin handle** — when rsync (MSYS2, Cygwin, or cwRsync) forks flyssh as the `-e` transport, the inherited stdin pipe is opened for overlapped (async) I/O.  Go's `os.Stdin.Read` calls `ReadFile` with a nil `OVERLAPPED` pointer, which is invalid for async handles (Windows error 87 "The parameter is incorrect").  A new `rawStdinReader()` reads via the Windows `ReadFile` API with a proper `OVERLAPPED` struct, fixing the root cause (Go issue [#15388](https://github.com/golang/go/issues/15388)) / 修复 Windows 上 rsync 传输失败：rsync（MSYS2/Cygwin/cwRsync）fork flyssh 作为 `-e` 传输时，stdin pipe 被设为 overlapped I/O 模式，Go 的 `os.Stdin.Read` 传 nil `OVERLAPPED` 导致 error 87。新增 `rawStdinReader()` 使用带 `OVERLAPPED` 结构体的 `ReadFile` 调用修复此问题
+
+### Improvements / 改进
+
+- **Improved Windows rsync detection** — rsync is now searched in: (1) flyssh.exe directory, (2) current working directory, (3) `%PATH%`, (4) well-known MSYS2/Cygwin/cwRsync/ICW paths.  When not found, actionable install instructions are printed / Windows rsync 检测增强：依次从 flyssh.exe 同目录、当前工作目录、`%PATH%`、已知安装路径查找 rsync，未找到时输出安装指引
+
+### Docs / 文档
+
+- **Windows rsync prerequisites documented** — README now includes a dedicated section on Windows rsync setup, explaining the overlapped I/O limitation and supported rsync sources / README 新增 Windows rsync 前置条件章节，说明 overlapped I/O 限制及支持的 rsync 来源
+
+### Verification / 验证
+
+- `go build ./...`
+- `GOOS=windows go build ./...`
+- `go test ./...`
+- Live Windows test: 57 MB rsync upload with Chinese-character paths succeeded (MSYS2 rsync + Cygwin rsync)
+
+---
+
 ## v1.0.18 (2026-05-10)
 
 ### Bug Fixes / 修复

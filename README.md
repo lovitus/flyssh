@@ -271,6 +271,35 @@ Transfer caveat:
 
 - On permission-restricted targets, `rsync` upload may return exit code `23` while files are already transferred. This is a remote filesystem behavior, not a FlySsh protocol failure. / 在权限受限目标机上，`rsync` 上传可能返回 `23`，但文件内容已到达。这通常是目标文件系统行为，不是 FlySsh 协议失败。
 
+### Windows rsync prerequisites / Windows rsync 前置条件
+
+On Windows, `--rsync-upload` and `--rsync-download` require a working `rsync.exe`.  FlySsh searches for it in this order:
+
+Windows 上使用 `--rsync-upload` / `--rsync-download` 需要可用的 `rsync.exe`。FlySsh 按以下顺序查找：
+
+1. **Same directory as flyssh.exe** (recommended — simplest setup) / flyssh.exe 同目录（推荐，最简单）
+2. **Current working directory** / 当前工作目录
+3. **`%PATH%`** (covers Scoop `scoop install rsync`, Chocolatey, etc.) / 环境变量 PATH
+4. **Well-known install paths**: MSYS2 (`C:\msys64\usr\bin`), Cygwin (`C:\cygwin64\bin`), cwRsync/ICW (`C:\Program Files\cwRsync\bin`, `C:\Program Files (x86)\ICW\bin`) / 已知安装路径
+
+All MSYS2, Cygwin, and cwRsync builds of rsync are supported.  FlySsh automatically handles the Windows overlapped-I/O pipe limitation that affects Go processes forked by these rsync builds (see [Go #15388](https://github.com/golang/go/issues/15388)).
+
+所有 MSYS2、Cygwin 和 cwRsync 版本的 rsync 均受支持。FlySsh 自动处理这些 rsync fork Go 进程时的 Windows overlapped I/O pipe 兼容问题。
+
+**Quick setup / 快速配置：**
+
+```
+# Option A: Scoop (easiest, no admin)
+scoop install rsync
+
+# Option B: Copy from MSYS2 (portable)
+# Copy rsync.exe + DLLs from C:\msys64\usr\bin\ to flyssh.exe directory
+```
+
+If rsync is not found, flyssh prints detailed installation instructions to stderr.
+
+如果未找到 rsync，flyssh 会在 stderr 输出详细安装指引。
+
 ### Troubleshooting Logs / 排障日志
 
 Use `-v` for detailed forwarding/reconnect traces:

@@ -25,7 +25,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "1.0.16"
+var Version = "1.0.19"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
@@ -428,11 +428,30 @@ func runInternalRsyncTransport(args []string) int {
 	}
 	defer session.Close()
 
-	session.Stdin = os.Stdin
+	// On Windows, the inherited stdin pipe may be opened for overlapped
+	// (async) I/O by MSYS2/Cygwin/cwRsync.  Go's os.Stdin.Read calls
+	// ReadFile with a nil OVERLAPPED, which fails on async handles.
+	// Use rawStdinReader() which provides an overlapped-aware reader.
+	stdinPipe, err := session.StdinPipe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "flyssh: session stdin pipe: %v\n", err)
+		return 255
+	}
 	session.Stdout = os.Stdout
 	session.Stderr = os.Stderr
 
-	if err := session.Run(transfer.BuildRemoteRsyncCommand(args[1:])); err != nil {
+	remoteCmd := transfer.BuildRemoteRsyncCommand(args[1:])
+	if err := session.Start(remoteCmd); err != nil {
+		fmt.Fprintf(os.Stderr, "flyssh: start remote rsync server: %v\n", err)
+		return 255
+	}
+
+	go func() {
+		io.Copy(stdinPipe, rawStdinReader())
+		stdinPipe.Close()
+	}()
+
+	if err := session.Wait(); err != nil {
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			return exitErr.ExitStatus()
 		}
