@@ -80,13 +80,13 @@ func TestBuildTransferArgsScenarios(t *testing.T) {
 			name: "rsync upload adds archive", protocol: "rsync", upload: true,
 			sources: []string{`C:\src`}, target: "/tmp/out",
 			wantFlag: "--rsync-upload",
-			wantRaw:  `-a 'C:\src' '/tmp/out'`,
+			wantRaw:  `-avh 'C:\src' '/tmp/out'`,
 		},
 		{
 			name: "rsync download adds archive", protocol: "rsync", upload: false,
 			sources: []string{"/tmp/src"}, target: `C:\out`,
 			wantFlag: "--rsync-download",
-			wantRaw:  `-a '/tmp/src' 'C:\out'`,
+			wantRaw:  `-avh '/tmp/src' 'C:\out'`,
 		},
 	}
 	for _, tt := range tests {
@@ -99,6 +99,25 @@ func TestBuildTransferArgsScenarios(t *testing.T) {
 				t.Fatalf("unexpected transfer args: flag=%q raw=%q", flag, raw)
 			}
 		})
+	}
+}
+
+func TestFormatChildCommandRedactsSecrets(t *testing.T) {
+	got := formatChildCommand(`C:\Tools\flyssh.exe`, []string{
+		"--password", "secret",
+		"--passwords=p1,p2",
+		"root:inline@10.0.0.1",
+		"--scp-download", `-r '/tmp/src' 'C:\out dir'`,
+	})
+	for _, forbidden := range []string{"secret", "p1,p2", "inline"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("command preview leaked %q in %q", forbidden, got)
+		}
+	}
+	for _, want := range []string{"flyssh.exe", "--password", "******", "root:******@10.0.0.1", "--scp-download"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("command preview %q missing %q", got, want)
+		}
 	}
 }
 

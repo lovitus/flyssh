@@ -2,6 +2,7 @@ package wingui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -51,7 +52,7 @@ func buildTransferArgs(protocol string, upload bool, directory bool, sources []s
 		} else {
 			flag = "--rsync-download"
 		}
-		parts = append(parts, "-a")
+		parts = append(parts, "-avh")
 	default:
 		return "", "", fmt.Errorf("unsupported transfer protocol: %s", protocol)
 	}
@@ -63,6 +64,62 @@ func buildTransferArgs(protocol string, upload bool, directory bool, sources []s
 	}
 	parts = append(parts, shellQuote(target))
 	return flag, strings.Join(parts, " "), nil
+}
+
+func formatChildCommand(executable string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, filepath.Base(executable))
+	for _, arg := range redactDisplayArgs(args) {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func redactDisplayArgs(args []string) []string {
+	sensitive := map[string]bool{
+		"--password":       true,
+		"--passwords":      true,
+		"--socks-pass":     true,
+		"--secondhost":     true,
+		"--secondhostpass": true,
+	}
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if sensitive[arg] {
+			out = append(out, arg)
+			if i+1 < len(args) {
+				out = append(out, "******")
+				i++
+			}
+			continue
+		}
+		redacted := false
+		for prefix := range sensitive {
+			if strings.HasPrefix(arg, prefix+"=") {
+				out = append(out, prefix+"=******")
+				redacted = true
+				break
+			}
+		}
+		if !redacted {
+			out = append(out, redactInlinePassword(arg))
+		}
+	}
+	return out
+}
+
+func redactInlinePassword(arg string) string {
+	at := strings.LastIndex(arg, "@")
+	if at <= 0 {
+		return arg
+	}
+	userInfo := arg[:at]
+	colon := strings.Index(userInfo, ":")
+	if colon < 0 || strings.ContainsAny(userInfo, `/\`) {
+		return arg
+	}
+	return userInfo[:colon+1] + "******" + arg[at:]
 }
 
 func shellQuote(s string) string {

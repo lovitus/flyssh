@@ -21,7 +21,7 @@ func TestBuildRsyncCommandArgsUpload(t *testing.T) {
 		Target:    "/remote/dst",
 	}
 
-	got := buildRsyncCommandArgs(spec, "/tmp/flyssh")
+	got := buildRsyncCommandArgs(spec, "/tmp/flyssh", "/usr/bin/rsync")
 	want := []string{
 		"-e", "'/tmp/flyssh' '--internal-rsync-transport'",
 		"-avz", "--delete",
@@ -42,7 +42,7 @@ func TestBuildRsyncCommandArgsDownload(t *testing.T) {
 		Target:    "./localdir",
 	}
 
-	got := buildRsyncCommandArgs(spec, "/tmp/flyssh")
+	got := buildRsyncCommandArgs(spec, "/tmp/flyssh", "/usr/bin/rsync")
 	want := []string{
 		"-e", "'/tmp/flyssh' '--internal-rsync-transport'",
 		"-avz",
@@ -53,6 +53,178 @@ func TestBuildRsyncCommandArgsDownload(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected args:\n got: %#v\nwant: %#v", got, want)
 	}
+}
+
+func TestFormatRsyncCommandQuotesArgs(t *testing.T) {
+	got := formatRsyncCommand(`C:\Program Files\cwRsync\bin\rsync.exe`, []string{
+		"-e",
+		`'C:\Program Files\flyssh\flyssh.exe' '--internal-rsync-transport'`,
+		"-avh",
+		"flyssh:/remote/a dir",
+		`/cygdrive/c/Users/leaf/Downloads`,
+	})
+	for _, want := range []string{
+		`'C:\Program Files\cwRsync\bin\rsync.exe'`,
+		`'-e'`,
+		`'flyssh:/remote/a dir'`,
+		`'/cygdrive/c/Users/leaf/Downloads'`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatted command %q missing %q", got, want)
+		}
+	}
+}
+
+func TestRsyncSafeLocalPathForWindowsCygwinRsync(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		rsyncBin string
+		want     string
+	}{
+		{
+			name:     "cygwin",
+			path:     `E:\aria2-down`,
+			rsyncBin: `C:\cygwin64\bin\rsync.exe`,
+			want:     `/cygdrive/e/aria2-down`,
+		},
+		{
+			name:     "cwrsync",
+			path:     `E:\aria2-down`,
+			rsyncBin: `C:\Program Files\cwRsync\bin\rsync.exe`,
+			want:     `/cygdrive/e/aria2-down`,
+		},
+		{
+			name:     "root",
+			path:     `E:\`,
+			rsyncBin: `C:\cygwin64\bin\rsync.exe`,
+			want:     `/cygdrive/e/`,
+		},
+		{
+			name:     "forward slashes",
+			path:     `E:/aria2-down`,
+			rsyncBin: `C:\cygwin64\bin\rsync.exe`,
+			want:     `/cygdrive/e/aria2-down`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rsyncSafeLocalPathForOS(tt.path, tt.rsyncBin, "windows")
+			if got != tt.want {
+				t.Fatalf("unexpected path: got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRsyncSafeLocalPathForWindowsMsysRsync(t *testing.T) {
+	got := rsyncSafeLocalPathForOS(`E:\aria2-down`, `C:\msys64\usr\bin\rsync.exe`, "windows")
+	if got != "/e/aria2-down" {
+		t.Fatalf("unexpected path: got %q", got)
+	}
+}
+
+func TestRsyncSafeLocalPathProbesUnknownRsyncCygdriveStyle(t *testing.T) {
+	resetRsyncLocalPathStyleCache()
+	oldPathExists := rsyncPathExists
+	oldRunRsyncListOnly := runRsyncListOnly
+	defer func() {
+		rsyncPathExists = oldPathExists
+		runRsyncListOnly = oldRunRsyncListOnly
+		resetRsyncLocalPathStyleCache()
+	}()
+
+	rsyncPathExists = func(path string) bool { return path == `E:\aria2-down` }
+	runRsyncListOnly = func(_, path string) error {
+		if path == "/cygdrive/e/aria2-down" {
+			return nil
+		}
+		return fmt.Errorf("unsupported path style")
+	}
+
+	got := rsyncSafeLocalPathForOS(`E:\aria2-down`, `C:\tools\rsync.exe`, "windows")
+	if got != "/cygdrive/e/aria2-down" {
+		t.Fatalf("unexpected path: got %q", got)
+	}
+}
+
+func TestRsyncSafeLocalPathProbesUnknownRsyncMsysStyle(t *testing.T) {
+	resetRsyncLocalPathStyleCache()
+	oldPathExists := rsyncPathExists
+	oldRunRsyncListOnly := runRsyncListOnly
+	defer func() {
+		rsyncPathExists = oldPathExists
+		runRsyncListOnly = oldRunRsyncListOnly
+		resetRsyncLocalPathStyleCache()
+	}()
+
+	probed := make([]string, 0, 2)
+	rsyncPathExists = func(path string) bool { return path == `E:\aria2-down` }
+	runRsyncListOnly = func(_, path string) error {
+		probed = append(probed, path)
+		if path == "/e/aria2-down" {
+			return nil
+		}
+		return fmt.Errorf("unsupported path style")
+	}
+
+	got := rsyncSafeLocalPathForOS(`E:\aria2-down`, `C:\tools\rsync.exe`, "windows")
+	if got != "/e/aria2-down" {
+		t.Fatalf("unexpected path: got %q", got)
+	}
+	wantProbed := []string{"/cygdrive/e/aria2-down", "/e/aria2-down"}
+	if !reflect.DeepEqual(probed, wantProbed) {
+		t.Fatalf("unexpected probe order: got %#v want %#v", probed, wantProbed)
+	}
+}
+
+func TestRsyncSafeLocalPathFallsBackWhenProbePathMissing(t *testing.T) {
+	resetRsyncLocalPathStyleCache()
+	oldPathExists := rsyncPathExists
+	oldRunRsyncListOnly := runRsyncListOnly
+	defer func() {
+		rsyncPathExists = oldPathExists
+		runRsyncListOnly = oldRunRsyncListOnly
+		resetRsyncLocalPathStyleCache()
+	}()
+
+	rsyncPathExists = func(string) bool { return false }
+	runRsyncListOnly = func(_, path string) error {
+		t.Fatalf("probe should not run for missing native path, got %q", path)
+		return nil
+	}
+
+	got := rsyncSafeLocalPathForOS(`E:\new-target`, `C:\tools\rsync.exe`, "windows")
+	if got != "/cygdrive/e/new-target" {
+		t.Fatalf("unexpected fallback path: got %q", got)
+	}
+}
+
+func TestRsyncSafeLocalPathLeavesNonWindowsDrivePathsUnchanged(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		goos string
+	}{
+		{name: "non windows", path: `E:\aria2-down`, goos: "linux"},
+		{name: "relative", path: `.\aria2-down`, goos: "windows"},
+		{name: "posix", path: `/tmp/aria2-down`, goos: "windows"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rsyncSafeLocalPathForOS(tt.path, `C:\cygwin64\bin\rsync.exe`, tt.goos)
+			if got != tt.path {
+				t.Fatalf("unexpected path: got %q want %q", got, tt.path)
+			}
+		})
+	}
+}
+
+func resetRsyncLocalPathStyleCache() {
+	rsyncLocalPathStyleCache.Range(func(key, _ any) bool {
+		rsyncLocalPathStyleCache.Delete(key)
+		return true
+	})
 }
 
 func TestEncodeInternalRsyncOptionsClearsTransferFields(t *testing.T) {

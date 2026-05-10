@@ -25,7 +25,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "1.0.19"
+var Version = "1.0.20"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.

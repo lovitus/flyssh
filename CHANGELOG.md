@@ -1,5 +1,29 @@
 # Changelog / 更新日志
 
+## v1.0.20 (2026-05-10)
+
+### Bug Fixes / 修复
+
+- **Fix Windows rsync downloads to drive-letter directories** — local Windows targets such as `E:\aria2-down` are no longer passed to Cygwin/cwRsync as `./E:\...`, which produced invalid paths like `/cygdrive/e/./E:\...`; FlySsh now converts drive-letter paths to the local rsync runtime's POSIX mount style / 修复 Windows rsync 下载到盘符目录失败：本地目标如 `E:\aria2-down` 不再被传成会导致 `/cygdrive/e/./E:\...` 的 `./E:\...` 形式，而是转换为当前 rsync 运行时支持的 POSIX 挂载路径
+- **Probe Windows rsync path style before transfer** — FlySsh now tries read-only `rsync --list-only` probes for `/cygdrive/x/...` and `/x/...` styles and caches the working style per `rsync.exe`, with MSYS2/Cygwin/cwRsync path heuristics kept as fallback / Windows rsync 传输前探测路径风格：先通过只读 `rsync --list-only` 探测 `/cygdrive/x/...` 与 `/x/...` 哪种可用，并按 `rsync.exe` 缓存结果；MSYS2/Cygwin/cwRsync 目录和 DLL 判断作为兜底
+- **Avoid Walk list panic on empty remote directories** — GUI file lists now provide a placeholder row for empty listings so refreshing or entering an empty directory does not crash the Windows companion GUI / 避免空远端目录导致 Walk 列表 panic：GUI 文件列表为空时显示占位行，刷新或进入空目录不再崩溃
+
+### Improvements / 改进
+
+- **Improve Windows companion GUI transfer controls** — SCP and rsync are now shown as separate direction-aware buttons, the remote path field is visible in the remote pane, and the log area supports scrolling / 改进 Windows 图形传输面板：SCP 与 rsync 改为带方向的独立按钮，远端路径框显示在远端面板内，日志区支持滚动
+- **Show redacted child commands before GUI transfers** — GUI logs now preview the spawned FlySsh command while redacting inline and flag-based passwords / GUI 传输前显示脱敏后的子命令：日志中预览实际启动的 FlySsh 子进程命令，同时隐藏内联密码和密码参数
+- **Use more informative default rsync flags from the GUI** — GUI rsync transfers now use `-avh` by default instead of only `-a` / GUI rsync 默认参数更清晰：默认使用 `-avh`，不再只使用 `-a`
+
+### Verification / 验证
+
+- `go test ./pkg/transfer`
+- `go test ./pkg/wingui`
+- `go test ./...`
+- `go test -race ./pkg/transfer ./pkg/wingui`
+- `GOOS=windows GOARCH=amd64 go build ./...`
+
+---
+
 ## v1.0.19 (2026-05-10)
 
 ### Bug Fixes / 修复

@@ -135,16 +135,16 @@ type app struct {
 	rawArgs []string
 	exe     string
 
-	mw         *walk.MainWindow
-	status     *walk.LineEdit
-	summary    *walk.LineEdit
-	localPath  *walk.LineEdit
-	remotePath *walk.LineEdit
-	localLB    *walk.ListBox
-	remoteLB   *walk.ListBox
-	protocol   *walk.ComboBox
-	transfer   *walk.PushButton
-	log        *walk.TextEdit
+	mw          *walk.MainWindow
+	status      *walk.LineEdit
+	summary     *walk.LineEdit
+	localPath   *walk.LineEdit
+	remotePath  *walk.LineEdit
+	localLB     *walk.ListBox
+	remoteLB    *walk.ListBox
+	scpButton   *walk.PushButton
+	rsyncButton *walk.PushButton
+	log         *walk.TextEdit
 
 	mu                sync.Mutex
 	localNav          navState
@@ -190,13 +190,6 @@ func (a *app) run() error {
 				Label{Text: "Connection"},
 				LineEdit{AssignTo: &a.summary, ReadOnly: true, ColumnSpan: 3},
 				LineEdit{AssignTo: &a.status, ReadOnly: true},
-				Label{Text: "Remote Path"},
-				LineEdit{AssignTo: &a.remotePath, ColumnSpan: 3, OnKeyDown: func(key walk.Key) {
-					if key == walk.KeyReturn {
-						a.gotoRemotePath(a.remotePath.Text())
-					}
-				}},
-				PushButton{Text: "Refresh", OnClicked: a.refreshRemote},
 			}},
 			Composite{Layout: HBox{}, Children: []Widget{
 				Composite{Layout: VBox{}, StretchFactor: 1, Children: []Widget{
@@ -224,16 +217,21 @@ func (a *app) run() error {
 						PushButton{Text: "Up", OnClicked: a.remoteUp},
 						PushButton{Text: "Refresh", OnClicked: a.refreshRemote},
 					}},
+					LineEdit{AssignTo: &a.remotePath, OnKeyDown: func(key walk.Key) {
+						if key == walk.KeyReturn {
+							a.gotoRemotePath(a.remotePath.Text())
+						}
+					}},
 					ListBox{AssignTo: &a.remoteLB, MultiSelection: true, StretchFactor: 1,
 						OnSelectedIndexesChanged: a.remoteSelectionChanged,
 						OnItemActivated:          a.remoteActivate},
 				}},
 			}},
 			Composite{Layout: HBox{}, Children: []Widget{
-				ComboBox{AssignTo: &a.protocol, Model: []string{"scp", "rsync"}, CurrentIndex: 0, OnCurrentIndexChanged: a.setButtons},
-				PushButton{AssignTo: &a.transfer, Text: "Transfer", OnClicked: a.startTransfer},
+				PushButton{AssignTo: &a.scpButton, Text: "SCP Transfer", OnClicked: func() { a.startTransfer("scp") }},
+				PushButton{AssignTo: &a.rsyncButton, Text: "rsync Transfer", OnClicked: func() { a.startTransfer("rsync") }},
 			}},
-			TextEdit{AssignTo: &a.log, ReadOnly: true, MinSize: Size{Height: 120}},
+			TextEdit{AssignTo: &a.log, ReadOnly: true, VScroll: true, HScroll: true, MinSize: Size{Height: 120}},
 		},
 	}).Create(); err != nil {
 		return err
@@ -563,17 +561,13 @@ func (a *app) applySelection(selectedSide side, indexes []int, entries []fileEnt
 	return normalized
 }
 
-func (a *app) startTransfer() {
+func (a *app) startTransfer(protocol string) {
 	a.mu.Lock()
 	selection := a.selection
 	localDir := a.localNav.Current
 	remoteDir := a.remoteNav.Current
 	a.mu.Unlock()
 
-	protocol := "scp"
-	if idx := a.protocol.CurrentIndex(); idx == 1 {
-		protocol = "rsync"
-	}
 	upload := selection.Side == sideLocal
 	sources, target := transferPaths(selection, localDir, remoteDir)
 	flag, raw, err := buildTransferArgs(protocol, upload, selection.Dir != "", sources, target)
@@ -646,6 +640,7 @@ func (a *app) endOperation() {
 }
 
 func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
+	a.appendLogLine("command: " + formatChildCommand(a.exe, args))
 	child, stdout, stderr, err := startChild(a.exe, args)
 	if err != nil {
 		return nil, 1, err
@@ -752,14 +747,28 @@ func (a *app) setButtons() {
 	a.mu.Lock()
 	enabled := !a.busy && a.selection.valid() && a.remoteNav.Current != ""
 	rsyncEnabled := a.rsyncAvailable
+	selection := a.selection
 	a.mu.Unlock()
 	a.ui(func() {
-		protocol := "scp"
-		if a.protocol.CurrentIndex() == 1 {
-			protocol = "rsync"
-		}
-		a.transfer.SetEnabled(enabled && (protocol != "rsync" || rsyncEnabled))
+		_ = a.scpButton.SetText(transferButtonText("scp", selection))
+		_ = a.rsyncButton.SetText(transferButtonText("rsync", selection))
+		a.scpButton.SetEnabled(enabled)
+		a.rsyncButton.SetEnabled(enabled && rsyncEnabled)
 	})
+}
+
+func transferButtonText(protocol string, selection selectionState) string {
+	if !selection.valid() {
+		return "Transfer"
+	}
+	switch selection.Side {
+	case sideLocal:
+		return strings.ToUpper(protocol) + " Upload ->"
+	case sideRemote:
+		return "<- " + strings.ToUpper(protocol) + " Download"
+	default:
+		return "Transfer"
+	}
 }
 
 func (a *app) setStatus(status string) {
@@ -777,6 +786,9 @@ func (a *app) appendLogText(text string) {
 	}
 	a.ui(func() {
 		a.log.AppendText(text)
+		end := a.log.TextLength()
+		a.log.SetTextSelection(end, end)
+		a.log.ScrollToCaret()
 	})
 }
 
@@ -836,6 +848,9 @@ func validateLocalDir(dir string) error {
 }
 
 func entryDisplays(entries []fileEntry) []string {
+	if len(entries) == 0 {
+		return []string{"(empty)"}
+	}
 	result := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		result = append(result, entry.Display)
