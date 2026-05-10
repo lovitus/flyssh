@@ -2,6 +2,7 @@ package wingui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ type remoteEntry struct {
 	Size  int64  `json:"size"`
 	MTime int64  `json:"mtime"`
 }
+
+type statFunc func(string) (os.FileInfo, error)
 
 func buildChildArgs(rawArgs []string, extra ...string) []string {
 	args := make([]string, 0, len(rawArgs)+len(extra))
@@ -153,13 +156,145 @@ func isASCIILetter(ch byte) bool {
 	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }
 
+func classifyDroppedPaths(paths []string) ([]string, bool, string, error) {
+	return classifyDroppedPathsWithStat(paths, os.Stat)
+}
+
+func classifyDroppedPathsWithStat(paths []string, stat statFunc) ([]string, bool, string, error) {
+	if len(paths) == 0 {
+		return nil, false, "", fmt.Errorf("drop contains no files")
+	}
+	sources := make([]string, 0, len(paths))
+	fileCount := 0
+	dirCount := 0
+	for _, path := range paths {
+		source := normalizeLocalTransferPath(path)
+		if source == "" {
+			return nil, false, "", fmt.Errorf("drop contains an empty path")
+		}
+		info, err := stat(source)
+		if err != nil {
+			return nil, false, "", fmt.Errorf("cannot access dropped path %q: %w", source, err)
+		}
+		if info.IsDir() {
+			dirCount++
+		} else {
+			fileCount++
+		}
+		sources = append(sources, source)
+	}
+	return sources, dirCount > 0, droppedPathsSummary(sources, fileCount, dirCount), nil
+}
+
+func droppedPathsSummary(sources []string, fileCount, dirCount int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d file(s), %d folder(s)", fileCount, dirCount)
+	limit := len(sources)
+	if limit > 5 {
+		limit = 5
+	}
+	for i := 0; i < limit; i++ {
+		b.WriteString("\r\n")
+		b.WriteString(sources[i])
+	}
+	if more := len(sources) - limit; more > 0 {
+		fmt.Fprintf(&b, "\r\n... and %d more", more)
+	}
+	return b.String()
+}
+
 func formatChildCommand(executable string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, filepath.Base(executable))
-	for _, arg := range redactDisplayArgs(args) {
-		parts = append(parts, shellQuote(arg))
+	parts = append(parts, quoteDisplayArg(filepath.Base(executable)))
+	redacted := redactDisplayArgs(args)
+	for i := 0; i < len(redacted); i++ {
+		arg := redacted[i]
+		parts = append(parts, quoteDisplayArg(arg))
+		if isTransferFlag(arg) && i+1 < len(redacted) {
+			i++
+			parts = append(parts, formatTransferRawForDisplay(redacted[i]))
+		}
 	}
 	return strings.Join(parts, " ")
+}
+
+func isTransferFlag(arg string) bool {
+	switch arg {
+	case "--scp-upload", "--scp-download", "--rsync-upload", "--rsync-download":
+		return true
+	default:
+		return false
+	}
+}
+
+func formatTransferRawForDisplay(raw string) string {
+	words, err := splitDisplayShellWords(raw)
+	if err != nil || len(words) == 0 {
+		return quoteDisplayArg(raw)
+	}
+	parts := make([]string, 0, len(words))
+	for _, word := range words {
+		parts = append(parts, quoteDisplayArg(word))
+	}
+	return strings.Join(parts, " ")
+}
+
+func splitDisplayShellWords(raw string) ([]string, error) {
+	var words []string
+	var b strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+	hadWord := false
+
+	flush := func() {
+		if hadWord {
+			words = append(words, b.String())
+			b.Reset()
+			hadWord = false
+		}
+	}
+
+	for _, r := range raw {
+		switch {
+		case escaped:
+			b.WriteRune(r)
+			hadWord = true
+			escaped = false
+		case r == '\\' && !inSingle:
+			escaped = true
+			hadWord = true
+		case r == '\'' && !inDouble:
+			inSingle = !inSingle
+			hadWord = true
+		case r == '"' && !inSingle:
+			inDouble = !inDouble
+			hadWord = true
+		case (r == ' ' || r == '\t' || r == '\n' || r == '\r') && !inSingle && !inDouble:
+			flush()
+		default:
+			b.WriteRune(r)
+			hadWord = true
+		}
+	}
+	if escaped {
+		b.WriteRune('\\')
+	}
+	if inSingle || inDouble {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	flush()
+	return words, nil
+}
+
+func quoteDisplayArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(arg, " \t\r\n\"") {
+		return arg
+	}
+	return `"` + strings.ReplaceAll(arg, `"`, `\"`) + `"`
 }
 
 func redactDisplayArgs(args []string) []string {
@@ -232,7 +367,7 @@ func formatEntryDisplay(name string, isDir bool, size int64, mtime int64) string
 	if mtime > 0 {
 		when = time.Unix(mtime, 0).Format("2006-01-02 15:04")
 	}
-	return fmt.Sprintf("%-42s %10s  %s", displayName(name, isDir), kind, when)
+	return fmt.Sprintf("%-48s %12s %16s", displayName(name, isDir), kind, when)
 }
 
 func formatSize(size int64) string {

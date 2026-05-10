@@ -39,6 +39,31 @@ const (
 	sortBySize sortMode = "size"
 )
 
+const (
+	buttonHeight         = 44
+	transferButtonHeight = 56
+	transferTopGap       = 12
+	logMinHeight         = 58
+)
+
+const (
+	dropUploadCancel = walk.DlgCmdCancel
+	dropUploadRsync  = 1001
+	dropUploadSCP    = 1002
+)
+
+func appFont() Font {
+	return Font{PointSize: 10}
+}
+
+func buttonFont() Font {
+	return Font{PointSize: 11}
+}
+
+func listFont() Font {
+	return Font{Family: "Consolas", PointSize: 10}
+}
+
 type fileEntry struct {
 	Name    string
 	IsDir   bool
@@ -201,22 +226,23 @@ func (a *app) run() error {
 		AssignTo: &a.mw,
 		Title:    "FlySSH Transfer",
 		MinSize:  Size{Width: 980, Height: 680},
-		Layout:   VBox{},
+		Font:     appFont(),
+		Layout:   VBox{Margins: Margins{Left: 8, Top: 6, Right: 8, Bottom: 6}, Spacing: 4},
 		Children: []Widget{
-			Composite{Layout: Grid{Columns: 2}, Children: []Widget{
+			Composite{Layout: Grid{Columns: 2, MarginsZero: true, Spacing: 4}, Children: []Widget{
 				Label{Text: "Connection"},
 				LineEdit{AssignTo: &a.summary, ReadOnly: true},
 				Label{Text: "Status"},
 				LineEdit{AssignTo: &a.status, ReadOnly: true},
 			}},
-			Composite{Layout: HBox{}, Children: []Widget{
-				Composite{Layout: VBox{}, StretchFactor: 1, Children: []Widget{
-					Composite{Layout: HBox{}, Children: []Widget{
+			Composite{Layout: HBox{MarginsZero: true, Spacing: 6}, Children: []Widget{
+				Composite{Layout: VBox{MarginsZero: true, Spacing: 4}, StretchFactor: 1, Children: []Widget{
+					Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
 						Label{Text: "Local"},
-						PushButton{Text: "Back", MaxSize: Size{Width: 64}, OnClicked: a.localBack},
-						PushButton{Text: "Forward", MaxSize: Size{Width: 72}, OnClicked: a.localForward},
-						PushButton{Text: "Up", MaxSize: Size{Width: 48}, OnClicked: a.localUp},
-						PushButton{Text: "Refresh", MaxSize: Size{Width: 72}, OnClicked: a.refreshLocal},
+						PushButton{Text: "Back", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: a.localBack},
+						PushButton{Text: "Forward", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: a.localForward},
+						PushButton{Text: "Up", Font: buttonFont(), MinSize: Size{Width: 52, Height: buttonHeight}, MaxSize: Size{Width: 52}, OnClicked: a.localUp},
+						PushButton{Text: "Refresh", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: a.refreshLocal},
 						Label{Text: "Sort"},
 						ComboBox{AssignTo: &a.localSort, Model: sortModeLabels(), CurrentIndex: 0, MaxSize: Size{Width: 92}, OnCurrentIndexChanged: a.localSortChanged},
 					}},
@@ -225,24 +251,24 @@ func (a *app) run() error {
 							a.gotoLocalPath(a.localPath.Text())
 						}
 					}},
-					ListBox{AssignTo: &a.localLB, MultiSelection: true, StretchFactor: 1,
+					ListBox{AssignTo: &a.localLB, Font: listFont(), MultiSelection: true, StretchFactor: 1,
 						OnSelectedIndexesChanged: a.localSelectionChanged,
 						OnItemActivated:          a.localActivate},
 				}},
 				Composite{Layout: VBox{MarginsZero: true, Spacing: 8}, MinSize: Size{Width: 150}, MaxSize: Size{Width: 150}, Children: []Widget{
-					VSpacer{Size: 56},
+					VSpacer{Size: transferTopGap},
 					VSpacer{},
-					PushButton{AssignTo: &a.scpButton, Text: "SCP Transfer", MinSize: Size{Width: 140, Height: 44}, OnClicked: func() { a.startTransfer("scp") }},
-					PushButton{AssignTo: &a.rsyncButton, Text: "rsync Transfer", MinSize: Size{Width: 140, Height: 44}, OnClicked: func() { a.startTransfer("rsync") }},
+					PushButton{AssignTo: &a.scpButton, Text: "SCP Transfer", Font: buttonFont(), MinSize: Size{Width: 140, Height: transferButtonHeight}, OnClicked: func() { a.startTransfer("scp") }},
+					PushButton{AssignTo: &a.rsyncButton, Text: "rsync Transfer", Font: buttonFont(), MinSize: Size{Width: 140, Height: transferButtonHeight}, OnClicked: func() { a.startTransfer("rsync") }},
 					VSpacer{},
 				}},
-				Composite{Layout: VBox{}, StretchFactor: 1, Children: []Widget{
-					Composite{Layout: HBox{}, Children: []Widget{
+				Composite{Layout: VBox{MarginsZero: true, Spacing: 4}, StretchFactor: 1, Children: []Widget{
+					Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
 						Label{Text: "Remote"},
-						PushButton{Text: "Back", MaxSize: Size{Width: 64}, OnClicked: a.remoteBack},
-						PushButton{Text: "Forward", MaxSize: Size{Width: 72}, OnClicked: a.remoteForward},
-						PushButton{Text: "Up", MaxSize: Size{Width: 48}, OnClicked: a.remoteUp},
-						PushButton{Text: "Refresh", MaxSize: Size{Width: 72}, OnClicked: a.refreshRemote},
+						PushButton{Text: "Back", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: a.remoteBack},
+						PushButton{Text: "Forward", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: a.remoteForward},
+						PushButton{Text: "Up", Font: buttonFont(), MinSize: Size{Width: 52, Height: buttonHeight}, MaxSize: Size{Width: 52}, OnClicked: a.remoteUp},
+						PushButton{Text: "Refresh", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: a.refreshRemote},
 						Label{Text: "Sort"},
 						ComboBox{AssignTo: &a.remoteSort, Model: sortModeLabels(), CurrentIndex: 0, MaxSize: Size{Width: 92}, OnCurrentIndexChanged: a.remoteSortChanged},
 					}},
@@ -251,16 +277,16 @@ func (a *app) run() error {
 							a.gotoRemotePath(a.remotePath.Text())
 						}
 					}},
-					ListBox{AssignTo: &a.remoteLB, MultiSelection: true, StretchFactor: 1,
+					ListBox{AssignTo: &a.remoteLB, Font: listFont(), MultiSelection: true, StretchFactor: 1,
 						OnSelectedIndexesChanged: a.remoteSelectionChanged,
 						OnItemActivated:          a.remoteActivate},
 				}},
 			}},
-			Composite{Layout: HBox{}, Children: []Widget{
+			Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
 				Label{Text: "Log"},
-				PushButton{Text: "Clear", MaxSize: Size{Width: 64}, OnClicked: a.clearLog},
+				PushButton{Text: "Clear", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: a.clearLog},
 			}},
-			TextEdit{AssignTo: &a.log, ReadOnly: true, VScroll: true, HScroll: true, MinSize: Size{Height: 72}},
+			TextEdit{AssignTo: &a.log, ReadOnly: true, VScroll: true, HScroll: true, MinSize: Size{Height: logMinHeight}},
 		},
 	}).Create(); err != nil {
 		return err
@@ -268,6 +294,7 @@ func (a *app) run() error {
 	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
 		a.killCurrent()
 	})
+	a.remoteLB.DropFiles().Attach(a.remoteDropFiles)
 	a.summary.SetText(connectionSummary(a.opts))
 	a.localPath.SetText(a.localNav.Current)
 	if !a.rsyncAvailable {
@@ -665,7 +692,20 @@ func (a *app) startTransfer(protocol string) {
 		return
 	}
 	args := buildChildArgs(a.rawArgs, flag, raw)
+	a.runTransferArgs(args)
+}
 
+func (a *app) startUpload(protocol string, sources []string, hasDir bool, remoteDir string) {
+	flag, raw, err := buildTransferArgs(protocol, true, hasDir, sources, remoteDir)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	args := buildChildArgs(a.rawArgs, flag, raw)
+	a.runTransferArgs(args)
+}
+
+func (a *app) runTransferArgs(args []string) {
 	go func() {
 		if !a.startOperation() {
 			return
@@ -683,6 +723,87 @@ func (a *app) startTransfer(protocol string) {
 		a.mu.Unlock()
 		_ = a.loadRemoteUnderOperation(currentRemote)
 	}()
+}
+
+func (a *app) remoteDropFiles(paths []string) {
+	a.mu.Lock()
+	busy := a.busy
+	remoteDir := a.remoteNav.Current
+	rsyncAvailable := a.rsyncAvailable
+	a.mu.Unlock()
+	if busy {
+		a.setDropStatus("drop ignored: operation already running")
+		return
+	}
+	if remoteDir == "" {
+		a.setDropStatus("drop ignored: remote directory is not ready")
+		return
+	}
+
+	sources, hasDir, summary, err := classifyDroppedPaths(paths)
+	if err != nil {
+		a.setDropStatus("drop rejected: " + err.Error())
+		return
+	}
+	protocol := a.promptDropUploadProtocol(summary, remoteDir, rsyncAvailable)
+	if protocol == "" {
+		a.appendLogLine("drop upload cancelled")
+		return
+	}
+	a.startUpload(protocol, sources, hasDir, remoteDir)
+}
+
+func (a *app) setDropStatus(message string) {
+	a.setStatus(message)
+}
+
+func (a *app) promptDropUploadProtocol(summary, remoteDir string, rsyncAvailable bool) string {
+	var dlg *walk.Dialog
+	var cancelButton *walk.PushButton
+	message := "Upload dropped items to:\r\n" + remoteDir + "\r\n\r\n" + summary
+	if !rsyncAvailable {
+		message += "\r\n\r\nrsync is unavailable; use SCP or cancel."
+	}
+
+	err := (Dialog{
+		AssignTo:      &dlg,
+		Title:         "Upload dropped items",
+		MinSize:       Size{Width: 560, Height: 320},
+		Font:          appFont(),
+		Layout:        VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
+		CancelButton:  &cancelButton,
+		DefaultButton: &cancelButton,
+		Children: []Widget{
+			Label{Text: "Choose upload protocol"},
+			TextEdit{Text: message, ReadOnly: true, VScroll: true, MinSize: Size{Height: 170}},
+			Composite{Layout: HBox{MarginsZero: true, Spacing: 8}, Children: []Widget{
+				HSpacer{},
+				PushButton{Text: "rsync", Font: buttonFont(), Enabled: rsyncAvailable, MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
+					dlg.Close(dropUploadRsync)
+				}},
+				PushButton{Text: "SCP", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
+					dlg.Close(dropUploadSCP)
+				}},
+				PushButton{AssignTo: &cancelButton, Text: "Cancel", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
+					dlg.Close(dropUploadCancel)
+				}},
+			}},
+		},
+	}).Create(a.mw)
+	if err != nil {
+		a.setStatus("drop confirm failed: " + err.Error())
+		return ""
+	}
+	defer dlg.Dispose()
+
+	switch dlg.Run() {
+	case dropUploadRsync:
+		return "rsync"
+	case dropUploadSCP:
+		return "scp"
+	default:
+		return ""
+	}
 }
 
 func transferPaths(sel selectionState, localDir, remoteDir string) ([]string, string) {

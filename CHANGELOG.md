@@ -1,5 +1,25 @@
 # Changelog / 更新日志
 
+## v1.0.22 (2026-05-10)
+
+### Features / 功能
+
+- **Add drag-and-drop uploads to the Windows companion GUI** — users can drag local files or folders onto the remote file list, review the target directory and selected paths, then choose `rsync`, `SCP`, or `Cancel`; invalid drops are rejected as a whole before any transfer starts / Windows 图形传输面板支持拖拽上传：可将本地文件或文件夹拖到远端列表，确认目标目录和路径后选择 `rsync`、`SCP` 或取消；存在无效路径时会整体拒绝，不会部分上传
+
+### Improvements / 改进
+
+- **Keep drag-drop uploads on the thin subprocess path** — drop uploads reuse the existing `--scp-upload` / `--rsync-upload` subprocess transfer flow, including SCP `-r` for folders and rsync `-avh`, without introducing a new transfer backend / 拖拽上传继续走轻量子进程路径：复用现有 `--scp-upload` / `--rsync-upload` 传输流程，目录场景自动使用 SCP `-r`，rsync 使用 `-avh`，不新增传输后端
+- **Improve Windows GUI readability** — controls and list fonts are larger, file panes use fixed-width metadata columns, command previews avoid noisy POSIX quote escapes, and the log area is shorter so the file panes have more room / 改进 Windows GUI 可读性：按钮和列表字体加大，文件列表使用固定宽度元数据列，命令预览不再显示冗长的 POSIX 引号转义，日志区域缩短以给文件列表更多空间
+
+### Verification / 验证
+
+- `go test ./pkg/wingui`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-1.0.22-review.exe .`
+- `GOOS=windows GOARCH=amd64 go test -c ./pkg/wingui -o /tmp/wingui-1.0.22-drop-upload.test.exe`
+
+---
+
 ## v1.0.21 (2026-05-10)
 
 ### Bug Fixes / 修复
