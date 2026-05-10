@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildChildArgsRemovesWinguiAndKeepsRawSecrets(t *testing.T) {
@@ -41,6 +42,16 @@ func TestBuildChildArgsStripsVersionFlags(t *testing.T) {
 			in:   []string{"-lVincent", "host", "--wingui"},
 			want: []string{"-lVincent", "host"},
 		},
+		{
+			name: "combined version flag stripped",
+			in:   []string{"-vV", "user@host", "--wingui"},
+			want: []string{"-v", "user@host"},
+		},
+		{
+			name: "short option value preserved",
+			in:   []string{"-o", "-V", "user@host", "--wingui"},
+			want: []string{"-o", "-V", "user@host"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,6 +60,15 @@ func TestBuildChildArgsStripsVersionFlags(t *testing.T) {
 				t.Fatalf("unexpected child args:\n got: %#v\nwant: %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildChildArgsPreservesRuntimeFlagLookingValues(t *testing.T) {
+	raw := []string{"--password", "--wingui", "--passwords", "-V", "user@host", "--wingui", "--version"}
+	got := buildChildArgs(raw, "--gui-internal-home")
+	want := []string{"--password", "--wingui", "--passwords", "-V", "user@host", "--gui-internal-home"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected child args:\n got: %#v\nwant: %#v", got, want)
 	}
 }
 
@@ -117,6 +137,46 @@ func TestFormatChildCommandRedactsSecrets(t *testing.T) {
 	for _, want := range []string{"flyssh.exe", "--password", "******", "root:******@10.0.0.1", "--scp-download"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command preview %q missing %q", got, want)
+		}
+	}
+}
+
+func TestNormalizeLocalTransferPathAvoidsDriveRelativePaths(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "drive only", in: `D:`, want: `D:\`},
+		{name: "drive relative", in: `D:Apps_lee\AnyDesk.zip`, want: `D:\Apps_lee\AnyDesk.zip`},
+		{name: "absolute backslash", in: `D:\Apps_lee\AnyDesk.zip`, want: `D:\Apps_lee\AnyDesk.zip`},
+		{name: "absolute slash", in: `D:/Apps_lee/AnyDesk.zip`, want: `D:/Apps_lee/AnyDesk.zip`},
+		{name: "relative", in: `Apps_lee\AnyDesk.zip`, want: `Apps_lee\AnyDesk.zip`},
+		{name: "remote style unchanged", in: `/tmp/file`, want: `/tmp/file`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeLocalTransferPath(tt.in)
+			if got != tt.want {
+				t.Fatalf("unexpected path: got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatEntryDisplayIncludesMetadata(t *testing.T) {
+	mtime := int64(1700000000)
+	expectedDate := time.Unix(mtime, 0).Format("2006-01-02")
+	got := formatEntryDisplay("file.txt", false, 1536, mtime)
+	for _, want := range []string{"file.txt", "1.5 KB", expectedDate} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("display %q missing %q", got, want)
+		}
+	}
+	dir := formatEntryDisplay("folder", true, 0, mtime)
+	for _, want := range []string{"folder/", "<DIR>", expectedDate} {
+		if !strings.Contains(dir, want) {
+			t.Fatalf("display %q missing %q", dir, want)
 		}
 	}
 }

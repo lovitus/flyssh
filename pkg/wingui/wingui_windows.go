@@ -31,9 +31,19 @@ const (
 	sideRemote side = "remote"
 )
 
+type sortMode string
+
+const (
+	sortByName sortMode = "name"
+	sortByTime sortMode = "time"
+	sortBySize sortMode = "size"
+)
+
 type fileEntry struct {
 	Name    string
 	IsDir   bool
+	Size    int64
+	MTime   int64
 	Display string
 }
 
@@ -142,6 +152,8 @@ type app struct {
 	remotePath  *walk.LineEdit
 	localLB     *walk.ListBox
 	remoteLB    *walk.ListBox
+	localSort   *walk.ComboBox
+	remoteSort  *walk.ComboBox
 	scpButton   *walk.PushButton
 	rsyncButton *walk.PushButton
 	log         *walk.TextEdit
@@ -151,6 +163,8 @@ type app struct {
 	remoteNav         navState
 	localItems        []fileEntry
 	remoteItems       []fileEntry
+	localSortMode     sortMode
+	remoteSortMode    sortMode
 	selection         selectionState
 	busy              bool
 	rsyncAvailable    bool
@@ -167,6 +181,7 @@ func Run(opts *cli.Options, rawArgs []string) error {
 	if err != nil {
 		cwd = "."
 	}
+	cwd = normalizeLocalTransferPath(cwd)
 	_, rsyncErr := resolveRsyncBinary()
 	a := &app{
 		opts:           opts,
@@ -175,6 +190,8 @@ func Run(opts *cli.Options, rawArgs []string) error {
 		localNav:       navState{Current: cwd},
 		selection:      newSelectionState(),
 		rsyncAvailable: rsyncErr == nil,
+		localSortMode:  sortByName,
+		remoteSortMode: sortByName,
 	}
 	return a.run()
 }
@@ -186,19 +203,22 @@ func (a *app) run() error {
 		MinSize:  Size{Width: 980, Height: 680},
 		Layout:   VBox{},
 		Children: []Widget{
-			Composite{Layout: Grid{Columns: 5}, Children: []Widget{
+			Composite{Layout: Grid{Columns: 2}, Children: []Widget{
 				Label{Text: "Connection"},
-				LineEdit{AssignTo: &a.summary, ReadOnly: true, ColumnSpan: 3},
+				LineEdit{AssignTo: &a.summary, ReadOnly: true},
+				Label{Text: "Status"},
 				LineEdit{AssignTo: &a.status, ReadOnly: true},
 			}},
 			Composite{Layout: HBox{}, Children: []Widget{
 				Composite{Layout: VBox{}, StretchFactor: 1, Children: []Widget{
-					Label{Text: "Local"},
 					Composite{Layout: HBox{}, Children: []Widget{
-						PushButton{Text: "Back", OnClicked: a.localBack},
-						PushButton{Text: "Forward", OnClicked: a.localForward},
-						PushButton{Text: "Up", OnClicked: a.localUp},
-						PushButton{Text: "Refresh", OnClicked: a.refreshLocal},
+						Label{Text: "Local"},
+						PushButton{Text: "Back", MaxSize: Size{Width: 64}, OnClicked: a.localBack},
+						PushButton{Text: "Forward", MaxSize: Size{Width: 72}, OnClicked: a.localForward},
+						PushButton{Text: "Up", MaxSize: Size{Width: 48}, OnClicked: a.localUp},
+						PushButton{Text: "Refresh", MaxSize: Size{Width: 72}, OnClicked: a.refreshLocal},
+						Label{Text: "Sort"},
+						ComboBox{AssignTo: &a.localSort, Model: sortModeLabels(), CurrentIndex: 0, MaxSize: Size{Width: 92}, OnCurrentIndexChanged: a.localSortChanged},
 					}},
 					LineEdit{AssignTo: &a.localPath, OnKeyDown: func(key walk.Key) {
 						if key == walk.KeyReturn {
@@ -209,13 +229,22 @@ func (a *app) run() error {
 						OnSelectedIndexesChanged: a.localSelectionChanged,
 						OnItemActivated:          a.localActivate},
 				}},
+				Composite{Layout: VBox{MarginsZero: true, Spacing: 8}, MinSize: Size{Width: 150}, MaxSize: Size{Width: 150}, Children: []Widget{
+					VSpacer{Size: 56},
+					VSpacer{},
+					PushButton{AssignTo: &a.scpButton, Text: "SCP Transfer", MinSize: Size{Width: 140, Height: 44}, OnClicked: func() { a.startTransfer("scp") }},
+					PushButton{AssignTo: &a.rsyncButton, Text: "rsync Transfer", MinSize: Size{Width: 140, Height: 44}, OnClicked: func() { a.startTransfer("rsync") }},
+					VSpacer{},
+				}},
 				Composite{Layout: VBox{}, StretchFactor: 1, Children: []Widget{
-					Label{Text: "Remote"},
 					Composite{Layout: HBox{}, Children: []Widget{
-						PushButton{Text: "Back", OnClicked: a.remoteBack},
-						PushButton{Text: "Forward", OnClicked: a.remoteForward},
-						PushButton{Text: "Up", OnClicked: a.remoteUp},
-						PushButton{Text: "Refresh", OnClicked: a.refreshRemote},
+						Label{Text: "Remote"},
+						PushButton{Text: "Back", MaxSize: Size{Width: 64}, OnClicked: a.remoteBack},
+						PushButton{Text: "Forward", MaxSize: Size{Width: 72}, OnClicked: a.remoteForward},
+						PushButton{Text: "Up", MaxSize: Size{Width: 48}, OnClicked: a.remoteUp},
+						PushButton{Text: "Refresh", MaxSize: Size{Width: 72}, OnClicked: a.refreshRemote},
+						Label{Text: "Sort"},
+						ComboBox{AssignTo: &a.remoteSort, Model: sortModeLabels(), CurrentIndex: 0, MaxSize: Size{Width: 92}, OnCurrentIndexChanged: a.remoteSortChanged},
 					}},
 					LineEdit{AssignTo: &a.remotePath, OnKeyDown: func(key walk.Key) {
 						if key == walk.KeyReturn {
@@ -228,10 +257,10 @@ func (a *app) run() error {
 				}},
 			}},
 			Composite{Layout: HBox{}, Children: []Widget{
-				PushButton{AssignTo: &a.scpButton, Text: "SCP Transfer", OnClicked: func() { a.startTransfer("scp") }},
-				PushButton{AssignTo: &a.rsyncButton, Text: "rsync Transfer", OnClicked: func() { a.startTransfer("rsync") }},
+				Label{Text: "Log"},
+				PushButton{Text: "Clear", MaxSize: Size{Width: 64}, OnClicked: a.clearLog},
 			}},
-			TextEdit{AssignTo: &a.log, ReadOnly: true, VScroll: true, HScroll: true, MinSize: Size{Height: 120}},
+			TextEdit{AssignTo: &a.log, ReadOnly: true, VScroll: true, HScroll: true, MinSize: Size{Height: 72}},
 		},
 	}).Create(); err != nil {
 		return err
@@ -242,7 +271,7 @@ func (a *app) run() error {
 	a.summary.SetText(connectionSummary(a.opts))
 	a.localPath.SetText(a.localNav.Current)
 	if !a.rsyncAvailable {
-		a.appendLogLine("rsync disabled: local rsync binary not found in PATH")
+		a.appendLogLine("rsync disabled: local rsync binary was not found in supported locations")
 	}
 	a.refreshLocal()
 	a.setButtons()
@@ -276,7 +305,8 @@ func (a *app) initializeRemote() {
 
 func (a *app) refreshLocal() {
 	a.mu.Lock()
-	dir := a.localNav.Current
+	dir := normalizeLocalTransferPath(a.localNav.Current)
+	a.localNav.Current = dir
 	a.mu.Unlock()
 	items, err := listLocal(dir)
 	if err != nil {
@@ -284,6 +314,7 @@ func (a *app) refreshLocal() {
 		return
 	}
 	a.mu.Lock()
+	sortEntries(items, a.localSortMode)
 	a.localItems = items
 	a.selection = newSelectionState()
 	a.mu.Unlock()
@@ -321,9 +352,16 @@ func (a *app) loadRemoteUnderOperation(dir string) error {
 	}
 	entries := make([]fileEntry, 0, len(items))
 	for _, item := range items {
-		entries = append(entries, fileEntry{Name: item.Name, IsDir: item.IsDir, Display: displayName(item.Name, item.IsDir)})
+		entries = append(entries, fileEntry{
+			Name:    item.Name,
+			IsDir:   item.IsDir,
+			Size:    item.Size,
+			MTime:   item.MTime,
+			Display: formatEntryDisplay(item.Name, item.IsDir, item.Size, item.MTime),
+		})
 	}
 	a.mu.Lock()
+	sortEntries(entries, a.remoteSortMode)
 	a.remoteItems = entries
 	a.selection = newSelectionState()
 	a.mu.Unlock()
@@ -355,6 +393,7 @@ func (a *app) runBrowseList(dir string) ([]remoteEntry, error) {
 }
 
 func (a *app) gotoLocalPath(dir string) {
+	dir = normalizeLocalTransferPath(dir)
 	a.mu.Lock()
 	next := a.localNav
 	a.mu.Unlock()
@@ -395,7 +434,8 @@ func (a *app) localBack() {
 	a.mu.Lock()
 	next := a.localNav
 	a.mu.Unlock()
-	dir := next.goBack()
+	dir := normalizeLocalTransferPath(next.goBack())
+	next.Current = dir
 	if err := validateLocalDir(dir); err != nil {
 		a.setStatus("local path failed: " + err.Error())
 		return
@@ -410,7 +450,8 @@ func (a *app) localForward() {
 	a.mu.Lock()
 	next := a.localNav
 	a.mu.Unlock()
-	dir := next.goForward()
+	dir := normalizeLocalTransferPath(next.goForward())
+	next.Current = dir
 	if err := validateLocalDir(dir); err != nil {
 		a.setStatus("local path failed: " + err.Error())
 		return
@@ -561,6 +602,54 @@ func (a *app) applySelection(selectedSide side, indexes []int, entries []fileEnt
 	return normalized
 }
 
+func (a *app) localSortChanged() {
+	if a.localSort == nil {
+		return
+	}
+	mode := sortModeFromIndex(a.localSort.CurrentIndex())
+	a.mu.Lock()
+	a.localSortMode = mode
+	if a.localLB == nil || a.remoteLB == nil {
+		a.mu.Unlock()
+		return
+	}
+	items := append([]fileEntry(nil), a.localItems...)
+	sortEntries(items, mode)
+	a.localItems = items
+	a.selection = newSelectionState()
+	a.mu.Unlock()
+	a.ui(func() {
+		a.localLB.SetModel(entryDisplays(items))
+		a.localLB.SetSelectedIndexes(nil)
+		a.remoteLB.SetSelectedIndexes(nil)
+	})
+	a.setButtons()
+}
+
+func (a *app) remoteSortChanged() {
+	if a.remoteSort == nil {
+		return
+	}
+	mode := sortModeFromIndex(a.remoteSort.CurrentIndex())
+	a.mu.Lock()
+	a.remoteSortMode = mode
+	if a.localLB == nil || a.remoteLB == nil {
+		a.mu.Unlock()
+		return
+	}
+	items := append([]fileEntry(nil), a.remoteItems...)
+	sortEntries(items, mode)
+	a.remoteItems = items
+	a.selection = newSelectionState()
+	a.mu.Unlock()
+	a.ui(func() {
+		a.remoteLB.SetModel(entryDisplays(items))
+		a.localLB.SetSelectedIndexes(nil)
+		a.remoteLB.SetSelectedIndexes(nil)
+	})
+	a.setButtons()
+}
+
 func (a *app) startTransfer(protocol string) {
 	a.mu.Lock()
 	selection := a.selection
@@ -604,11 +693,13 @@ func transferPaths(sel selectionState, localDir, remoteDir string) ([]string, st
 	sources := make([]string, 0, len(names))
 	switch sel.Side {
 	case sideLocal:
+		localDir = normalizeLocalTransferPath(localDir)
 		for _, name := range names {
-			sources = append(sources, filepath.Join(localDir, name))
+			sources = append(sources, normalizeLocalTransferPath(filepath.Join(localDir, name)))
 		}
 		return sources, remoteDir
 	case sideRemote:
+		localDir = normalizeLocalTransferPath(localDir)
 		for _, name := range names {
 			sources = append(sources, remoteJoin(remoteDir, name))
 		}
@@ -758,16 +849,17 @@ func (a *app) setButtons() {
 }
 
 func transferButtonText(protocol string, selection selectionState) string {
+	label := strings.ToUpper(protocol)
 	if !selection.valid() {
-		return "Transfer"
+		return label
 	}
 	switch selection.Side {
 	case sideLocal:
-		return strings.ToUpper(protocol) + " Upload ->"
+		return label + " Upload ->"
 	case sideRemote:
-		return "<- " + strings.ToUpper(protocol) + " Download"
+		return "<- " + label + " Download"
 	default:
-		return "Transfer"
+		return label
 	}
 }
 
@@ -789,6 +881,12 @@ func (a *app) appendLogText(text string) {
 		end := a.log.TextLength()
 		a.log.SetTextSelection(end, end)
 		a.log.ScrollToCaret()
+	})
+}
+
+func (a *app) clearLog() {
+	a.ui(func() {
+		a.log.SetText("")
 	})
 }
 
@@ -825,15 +923,52 @@ func listLocal(dir string) ([]fileEntry, error) {
 			}
 		}
 		isDir := info.IsDir()
-		result = append(result, fileEntry{Name: entry.Name(), IsDir: isDir, Display: displayName(entry.Name(), isDir)})
+		size := info.Size()
+		mtime := info.ModTime().Unix()
+		result = append(result, fileEntry{
+			Name:    entry.Name(),
+			IsDir:   isDir,
+			Size:    size,
+			MTime:   mtime,
+			Display: formatEntryDisplay(entry.Name(), isDir, size, mtime),
+		})
 	}
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].IsDir != result[j].IsDir {
-			return result[i].IsDir
-		}
-		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
-	})
+	sortEntries(result, sortByName)
 	return result, nil
+}
+
+func sortEntries(entries []fileEntry, mode sortMode) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir
+		}
+		switch mode {
+		case sortByTime:
+			if entries[i].MTime != entries[j].MTime {
+				return entries[i].MTime > entries[j].MTime
+			}
+		case sortBySize:
+			if entries[i].Size != entries[j].Size {
+				return entries[i].Size > entries[j].Size
+			}
+		}
+		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
+	})
+}
+
+func sortModeLabels() []string {
+	return []string{"Name", "Time", "Size"}
+}
+
+func sortModeFromIndex(index int) sortMode {
+	switch index {
+	case 1:
+		return sortByTime
+	case 2:
+		return sortBySize
+	default:
+		return sortByName
+	}
 }
 
 func validateLocalDir(dir string) error {

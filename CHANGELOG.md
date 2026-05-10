@@ -1,5 +1,26 @@
 # Changelog / 更新日志
 
+## v1.0.21 (2026-05-10)
+
+### Bug Fixes / 修复
+
+- **Preserve option values that look like GUI/runtime flags** — GUI child-process argument cleanup now strips only real `--wingui`, `--version`, and `-V` flags while preserving values consumed by options such as `--password --wingui`, `--passwords -V`, or `-o -V` / 保留看起来像 GUI/版本标志的参数值：GUI 子进程参数清理现在只移除真正的 `--wingui`、`--version`、`-V` 标志，不会误删 `--password --wingui`、`--passwords -V`、`-o -V` 等被其他选项消费的值
+- **Normalize drive-relative local transfer paths** — local Windows paths such as `D:folder\file` are normalized to `D:\folder\file` before browsing or transfer generation, avoiding ambiguous drive-relative semantics / 规范化 Windows 盘符相对路径：本地路径如 `D:folder\file` 在浏览或生成传输参数前会规范化为 `D:\folder\file`，避免盘符相对路径语义不明确
+
+### Improvements / 改进
+
+- **Add size/time metadata to the Windows companion GUI** — local and remote panes now show formatted size and modification time alongside names / Windows 图形传输面板显示大小和时间信息：本地与远端列表现在在名称旁展示格式化的大小和修改时间
+- **Add sortable file panes** — local and remote panes can sort by name, modification time, or size while keeping directories first / 文件列表支持排序：本地和远端面板可按名称、修改时间或大小排序，并保持目录优先
+- **Improve GUI log usability** — the log area now auto-scrolls to new output and includes a clear button / 改进 GUI 日志体验：日志区会自动滚动到新输出，并提供清空按钮
+
+### Verification / 验证
+
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-wingui-review-amd64.exe .`
+- `GOOS=windows GOARCH=arm64 go build -o /tmp/flyssh-wingui-review-arm64.exe .`
+
+---
+
 ## v1.0.20 (2026-05-10)
 
 ### Bug Fixes / 修复
