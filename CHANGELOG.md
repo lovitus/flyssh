@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## v1.0.26 (2026-05-11)
+
+### Bug Fixes / 修复
+
+- **Fix Windows GUI rename/move target capture** — the rename dialog now captures the target path before closing the modal dialog, avoiding Walk control state loss that could report `rename target is empty` even after the field had been initialized / 修复 Windows GUI 重命名/移动目标路径读取：重命名对话框现在会在关闭模态窗口前读取目标路径，避免 Walk 控件状态在关闭后丢失导致已初始化的路径仍被报成 `rename target is empty`
+
+### Verification / 验证
+
+- `go test -count=1 ./pkg/wingui`
+- `go test -count=1 ./...`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-rename-dialog-fix.exe .`
+
+---
+
 ## v1.0.25 (2026-05-11)
 
 ### Docs / 文档

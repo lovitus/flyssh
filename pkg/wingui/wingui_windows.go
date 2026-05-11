@@ -973,9 +973,14 @@ func (a *app) promptRenameTarget(selectedSide side, source string) (string, bool
 	var targetEdit *walk.LineEdit
 	var renameButton *walk.PushButton
 	var cancelButton *walk.PushButton
+	var target string
 	scope := "local"
 	if selectedSide == sideRemote {
 		scope = "remote"
+	}
+	confirmRename := func() {
+		target = targetEdit.Text()
+		dlg.Close(renameConfirm)
 	}
 
 	err := (Dialog{
@@ -988,12 +993,14 @@ func (a *app) promptRenameTarget(selectedSide side, source string) (string, bool
 		DefaultButton: &renameButton,
 		Children: []Widget{
 			Label{Text: "Edit the full " + scope + " path"},
-			LineEdit{AssignTo: &targetEdit},
+			LineEdit{AssignTo: &targetEdit, OnKeyDown: func(key walk.Key) {
+				if key == walk.KeyReturn {
+					confirmRename()
+				}
+			}},
 			Composite{Layout: HBox{MarginsZero: true, Spacing: 8}, Children: []Widget{
 				HSpacer{},
-				PushButton{AssignTo: &renameButton, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
-					dlg.Close(renameConfirm)
-				}},
+				PushButton{AssignTo: &renameButton, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: confirmRename},
 				PushButton{AssignTo: &cancelButton, Text: "Cancel", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
 					dlg.Close(walk.DlgCmdCancel)
 				}},
@@ -1013,7 +1020,6 @@ func (a *app) promptRenameTarget(selectedSide side, source string) (string, bool
 	if dlg.Run() != renameConfirm {
 		return "", false
 	}
-	target := targetEdit.Text()
 	if strings.TrimSpace(target) == "" {
 		a.setStatus("rename target is empty")
 		return "", false
