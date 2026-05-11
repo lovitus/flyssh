@@ -159,6 +159,8 @@ Authentication:
 Multi-hop (chain through unlimited machines):
   flyssh user1:pass1@host1 user2:pass2@host2 user3@host3:2222 [command]
   Each positional arg with @ is a hop. Last hop gets the shell/forwarding.
+  Use -- before a remote command if the command contains @ or could look like a hop:
+    flyssh user@host -- "printf '%%s\n' 'a@b'"
   --keys "k1,,k3,,,k6,"   Per-hop identity files (comma-separated, empty=skip)
   --passwords "p1,,p3"    Per-hop passwords (comma-separated, empty=skip)
   --key FILE              Single key applied to ALL hops (if --keys not set)

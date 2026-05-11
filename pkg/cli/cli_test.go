@@ -36,6 +36,16 @@ func TestParseArgs_CommandSeparatorAllowsAtSignInCommand(t *testing.T) {
 	}
 }
 
+func TestParseArgs_CommandSeparatorRequiresHost(t *testing.T) {
+	_, err := ParseArgs([]string{"--", "echo ok"})
+	if err == nil {
+		t.Fatal("expected command separator without host to fail")
+	}
+	if !strings.Contains(err.Error(), "requires a host") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestParseArgs_WinguiFlag(t *testing.T) {
 	opts, err := ParseArgs([]string{"user@host", "--wingui"})
 	if err != nil {

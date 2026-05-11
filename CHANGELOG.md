@@ -1,5 +1,23 @@
 # Changelog / 更新日志
 
+## v1.0.25 (2026-05-11)
+
+### Docs / 文档
+
+- **Document the remote command `--` separator** — README and CLI usage now explicitly describe `flyssh user@host -- <command>` for commands containing `@` or other text that could otherwise be parsed as an extra hop / 补充远程命令 `--` 分隔符文档：README 与 CLI usage 现在明确说明 `flyssh user@host -- <command>`，用于命令中包含 `@` 或其他可能被解析成额外跳点的文本
+
+### Tests / 测试
+
+- **Cover command separator error handling** — added coverage for rejecting `--` before any host is provided / 覆盖命令分隔符错误路径：新增测试确认未提供 host 时使用 `--` 会报错
+
+### Verification / 验证
+
+- `go test -count=1 ./pkg/cli`
+- `go test -count=1 ./...`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-1.0.25-windows-amd64.exe .`
+
+---
+
 ## v1.0.24 (2026-05-11)
 
 ### Bug Fixes / 修复

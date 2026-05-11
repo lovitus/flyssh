@@ -115,6 +115,10 @@ flyssh user@hostname
 flyssh user:password@hostname
 flyssh -p 2222 user@hostname
 flyssh user@hostname "ls -la"
+
+# Use -- when the remote command contains @ or could look like another hop.
+# 当远程命令包含 @ 或可能被误判为另一跳时，用 -- 分隔命令。
+flyssh user@hostname -- "printf '%s\n' 'name@example.com'"
 ```
 
 ### SOCKS5 Proxy / SOCKS5 代理
