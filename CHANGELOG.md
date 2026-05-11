@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.24 (2026-05-11)
+
+### Bug Fixes / 修复
+
+- **Fix Windows GUI remote delete and rename/move subprocess parsing** — remote delete/rename commands now pass through the standard `--` command separator so command text or paths containing `@` are not misclassified as extra SSH hops / 修复 Windows GUI 远端删除和重命名/移动的子进程解析：远端删除/重命名命令现在通过标准 `--` 命令分隔符传递，命令文本或路径中包含 `@` 时不会被误判为额外 SSH 跳点
+- **Fix remote delete command construction** — the generated shell command no longer uses `"$@"`, avoiding the existing hop parser's `@` heuristic and preserving multi-target delete behavior / 修复远端删除命令构造：生成的 shell 命令不再使用 `"$@"`，避开现有 hop 解析器的 `@` 启发式，同时保留多目标删除能力
+- **Fix rename dialog default target text** — the rename/move dialog now explicitly initializes the target path field after control creation, so accepting the default path no longer reports an empty target / 修复重命名对话框默认目标路径：重命名/移动对话框现在在控件创建后显式初始化目标路径，直接确认默认路径时不会再提示目标为空
+
+### Verification / 验证
+
+- `go test -count=1 ./pkg/cli ./pkg/wingui`
+- `go test -count=1 ./...`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-delete-rename-fix.exe .`
+
+---
+
 ## v1.0.23 (2026-05-11)
 
 ### Features / 功能

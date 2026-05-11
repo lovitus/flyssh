@@ -915,7 +915,7 @@ func (a *app) runRemoteDelete(targets []string) {
 		a.setStatus(err.Error())
 		return
 	}
-	args := buildChildArgs(a.rawArgs, "--no-reconnect", command)
+	args := buildChildArgs(a.rawArgs, "--no-reconnect", "--", command)
 	go func() {
 		if !a.startOperation() {
 			return
@@ -988,7 +988,7 @@ func (a *app) promptRenameTarget(selectedSide side, source string) (string, bool
 		DefaultButton: &renameButton,
 		Children: []Widget{
 			Label{Text: "Edit the full " + scope + " path"},
-			LineEdit{AssignTo: &targetEdit, Text: source},
+			LineEdit{AssignTo: &targetEdit},
 			Composite{Layout: HBox{MarginsZero: true, Spacing: 8}, Children: []Widget{
 				HSpacer{},
 				PushButton{AssignTo: &renameButton, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
@@ -1005,6 +1005,10 @@ func (a *app) promptRenameTarget(selectedSide side, source string) (string, bool
 		return "", false
 	}
 	defer dlg.Dispose()
+	if err := targetEdit.SetText(source); err != nil {
+		a.setStatus("rename dialog failed: " + err.Error())
+		return "", false
+	}
 	_ = targetEdit.SetFocus()
 	if dlg.Run() != renameConfirm {
 		return "", false
@@ -1039,7 +1043,7 @@ func (a *app) runRemoteRename(source, target string) {
 		a.setStatus(err.Error())
 		return
 	}
-	args := buildChildArgs(a.rawArgs, "--no-reconnect", command)
+	args := buildChildArgs(a.rawArgs, "--no-reconnect", "--", command)
 	go func() {
 		if !a.startOperation() {
 			return
@@ -1486,7 +1490,7 @@ func childDescription(args []string) string {
 			return "rsync upload"
 		case arg == "--rsync-download":
 			return "rsync download"
-		case strings.Contains(arg, `rm -rf -- "$@"`):
+		case strings.Contains(arg, `rm -rf -- "$1"`):
 			return "remote delete"
 		case strings.Contains(arg, `mv -- "$1" "$2"`):
 			return "remote rename"

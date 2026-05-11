@@ -23,6 +23,19 @@ func TestParseArgs_TransferFlag(t *testing.T) {
 	}
 }
 
+func TestParseArgs_CommandSeparatorAllowsAtSignInCommand(t *testing.T) {
+	opts, err := ParseArgs([]string{"jump@host1", "user@host2", "--", `printf '%s\n' 'a@b'`})
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if opts.Host != "host1" || len(opts.ExtraHosts) != 1 || opts.ExtraHosts[0] != "user@host2" {
+		t.Fatalf("unexpected route: host=%q extra=%#v", opts.Host, opts.ExtraHosts)
+	}
+	if want := `printf '%s\n' 'a@b'`; opts.Command != want {
+		t.Fatalf("unexpected command: got %q want %q", opts.Command, want)
+	}
+}
+
 func TestParseArgs_WinguiFlag(t *testing.T) {
 	opts, err := ParseArgs([]string{"user@host", "--wingui"})
 	if err != nil {

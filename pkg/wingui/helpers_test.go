@@ -294,7 +294,7 @@ func TestBuildRemoteDeleteCommand(t *testing.T) {
 	}
 	for _, want := range []string{
 		"sh -c",
-		`'rm -rf -- "$@"'`,
+		`'while [ "$#" -gt 0 ]; do rm -rf -- "$1" || exit $?; shift; done'`,
 		"flyssh-rm",
 		"'/tmp/a b'",
 		`'/tmp/quote'"'"'file'`,
@@ -303,6 +303,9 @@ func TestBuildRemoteDeleteCommand(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command %q missing %q", got, want)
 		}
+	}
+	if strings.Contains(got, "$@") {
+		t.Fatalf("delete command should not contain $@ because CLI hop parsing treats @ specially: %q", got)
 	}
 }
 

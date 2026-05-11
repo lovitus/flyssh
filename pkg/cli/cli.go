@@ -215,6 +215,14 @@ func ParseArgs(args []string) (*Options, error) {
 	for i < len(args) {
 		arg := args[i]
 
+		if arg == "--" {
+			if opts.Host == "" {
+				return nil, fmt.Errorf("-- command separator requires a host")
+			}
+			opts.Command = strings.Join(args[i+1:], " ")
+			break
+		}
+
 		// Long options (our extension)
 		if strings.HasPrefix(arg, "--") {
 			switch {

@@ -147,7 +147,7 @@ func buildRemoteDeleteCommand(targets []string) (string, error) {
 	if len(targets) == 0 {
 		return "", fmt.Errorf("no selected delete targets")
 	}
-	parts := []string{"sh", "-c", shellQuote(`rm -rf -- "$@"`), "flyssh-rm"}
+	parts := []string{"sh", "-c", shellQuote(`while [ "$#" -gt 0 ]; do rm -rf -- "$1" || exit $?; shift; done`), "flyssh-rm"}
 	for _, target := range targets {
 		if target == "" {
 			return "", fmt.Errorf("empty delete target")
