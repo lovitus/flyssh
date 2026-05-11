@@ -175,6 +175,20 @@ func buildRemoteRenameCommand(source, target string) (string, error) {
 	return strings.Join(parts, " "), nil
 }
 
+func buildRemoteMkdirCommand(target string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return "", fmt.Errorf("empty new folder target")
+	}
+	parts := []string{
+		"sh",
+		"-c",
+		shellQuote(`mkdir -- "$1"`),
+		"flyssh-mkdir",
+		shellQuote(target),
+	}
+	return strings.Join(parts, " "), nil
+}
+
 func normalizeLocalTransferPath(path string) string {
 	if len(path) >= 2 && path[1] == ':' && isASCIILetter(path[0]) {
 		if len(path) == 2 {

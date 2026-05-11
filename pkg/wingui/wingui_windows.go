@@ -23,6 +23,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+var terminalLogMu sync.Mutex
+
 type side string
 
 const (
@@ -53,6 +55,7 @@ const (
 	dropUploadSCP    = 1002
 	deleteConfirm    = 1003
 	renameConfirm    = 1004
+	newDirConfirm    = 1005
 )
 
 func appFont() Font {
@@ -124,24 +127,61 @@ func (n *navState) goForward() string {
 type selectionState struct {
 	Side  side
 	Files map[string]bool
-	Dir   string
+	Dirs  map[string]bool
 }
 
 func newSelectionState() selectionState {
-	return selectionState{Files: make(map[string]bool)}
+	return selectionState{
+		Files: make(map[string]bool),
+		Dirs:  make(map[string]bool),
+	}
 }
 
 func (s selectionState) valid() bool {
-	return s.Side != sideNone && (s.Dir != "" || len(s.Files) > 0)
+	return s.Side != sideNone && s.count() > 0
 }
 
-func (s selectionState) fileNames() []string {
-	names := make([]string, 0, len(s.Files))
+func (s selectionState) count() int {
+	seen := make(map[string]bool, len(s.Files)+len(s.Dirs))
 	for name := range s.Files {
+		seen[name] = true
+	}
+	for name := range s.Dirs {
+		seen[name] = true
+	}
+	return len(seen)
+}
+
+func (s selectionState) hasDir() bool {
+	return len(s.Dirs) > 0
+}
+
+func (s selectionState) names() ([]string, error) {
+	seen := make(map[string]bool, len(s.Files)+len(s.Dirs))
+	names := make([]string, 0, len(s.Files)+len(s.Dirs))
+	add := func(name string) error {
+		if seen[name] {
+			return nil
+		}
+		if err := validateSelectedName(name); err != nil {
+			return err
+		}
+		seen[name] = true
 		names = append(names, name)
+		return nil
+	}
+	for name := range s.Files {
+		if err := add(name); err != nil {
+			return nil, err
+		}
+	}
+	for name := range s.Dirs {
+		if err := add(name); err != nil {
+			return nil, err
+		}
 	}
 	sort.Strings(names)
-	return names
+	return names, nil
 }
 
 type childProcess struct {
@@ -187,6 +227,8 @@ type app struct {
 	remoteSort   *walk.ComboBox
 	scpButton    *walk.PushButton
 	rsyncButton  *walk.PushButton
+	localNewDir  *walk.PushButton
+	remoteNewDir *walk.PushButton
 	localRename  *walk.PushButton
 	remoteRename *walk.PushButton
 	localDelete  *walk.PushButton
@@ -262,8 +304,9 @@ func (a *app) run() error {
 								a.gotoLocalPath(a.localPath.Text())
 							}
 						}},
-						PushButton{AssignTo: &a.localRename, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: func() { a.renameSelection(sideLocal) }},
-						PushButton{AssignTo: &a.localDelete, Text: "Delete", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: func() { a.deleteSelection(sideLocal) }},
+						PushButton{AssignTo: &a.localNewDir, Text: "+Dir", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: func() { a.newDirectory(sideLocal) }},
+						PushButton{AssignTo: &a.localRename, Text: "MV", Font: buttonFont(), MinSize: Size{Width: 48, Height: buttonHeight}, MaxSize: Size{Width: 48}, OnClicked: func() { a.renameSelection(sideLocal) }},
+						PushButton{AssignTo: &a.localDelete, Text: "Del", Font: buttonFont(), MinSize: Size{Width: 48, Height: buttonHeight}, MaxSize: Size{Width: 48}, OnClicked: func() { a.deleteSelection(sideLocal) }},
 					}},
 					ListBox{AssignTo: &a.localLB, Font: listFont(), MultiSelection: true, StretchFactor: 1,
 						OnSelectedIndexesChanged: a.localSelectionChanged,
@@ -292,8 +335,9 @@ func (a *app) run() error {
 								a.gotoRemotePath(a.remotePath.Text())
 							}
 						}},
-						PushButton{AssignTo: &a.remoteRename, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: func() { a.renameSelection(sideRemote) }},
-						PushButton{AssignTo: &a.remoteDelete, Text: "Delete", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: func() { a.deleteSelection(sideRemote) }},
+						PushButton{AssignTo: &a.remoteNewDir, Text: "+Dir", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: func() { a.newDirectory(sideRemote) }},
+						PushButton{AssignTo: &a.remoteRename, Text: "MV", Font: buttonFont(), MinSize: Size{Width: 48, Height: buttonHeight}, MaxSize: Size{Width: 48}, OnClicked: func() { a.renameSelection(sideRemote) }},
+						PushButton{AssignTo: &a.remoteDelete, Text: "Del", Font: buttonFont(), MinSize: Size{Width: 48, Height: buttonHeight}, MaxSize: Size{Width: 48}, OnClicked: func() { a.deleteSelection(sideRemote) }},
 					}},
 					ListBox{AssignTo: &a.remoteLB, Font: listFont(), MultiSelection: true, StretchFactor: 1,
 						OnSelectedIndexesChanged: a.remoteSelectionChanged,
@@ -626,28 +670,68 @@ func (a *app) remoteSelectionChanged() {
 }
 
 func (a *app) applySelection(selectedSide side, indexes []int, entries []fileEntry) []int {
-	sel := newSelectionState()
-	normalized := make([]int, 0, len(indexes))
-	for _, idx := range indexes {
-		if idx < 0 || idx >= len(entries) {
-			continue
-		}
-		entry := entries[idx]
-		if entry.IsDir {
-			sel.Side = selectedSide
-			sel.Dir = entry.Name
-			normalized = []int{idx}
-			break
-		}
-		sel.Side = selectedSide
-		sel.Files[entry.Name] = true
-		normalized = append(normalized, idx)
-	}
+	sel, normalized, err := selectionFromIndexes(selectedSide, indexes, entries)
 	a.mu.Lock()
 	a.selection = sel
 	a.mu.Unlock()
+	if err != nil {
+		a.setStatus(err.Error())
+	}
 	a.setButtons()
 	return normalized
+}
+
+func selectionFromIndexes(selectedSide side, indexes []int, entries []fileEntry) (selectionState, []int, error) {
+	sel := newSelectionState()
+	normalized := make([]int, 0, len(indexes))
+	seenIndexes := make(map[int]bool, len(indexes))
+	for _, idx := range indexes {
+		if idx < 0 || idx >= len(entries) || seenIndexes[idx] {
+			continue
+		}
+		seenIndexes[idx] = true
+		entry := entries[idx]
+		if err := validateSelectedName(entry.Name); err != nil {
+			return newSelectionState(), nil, err
+		}
+		sel.Side = selectedSide
+		if entry.IsDir {
+			sel.Dirs[entry.Name] = true
+		} else {
+			sel.Files[entry.Name] = true
+		}
+		normalized = append(normalized, idx)
+	}
+	return sel, normalized, nil
+}
+
+func validateSelectedName(name string) error {
+	switch name {
+	case "", ".", "..", "~":
+		return fmt.Errorf("invalid selected name: %q", name)
+	}
+	if strings.HasPrefix(name, "~/") || strings.HasPrefix(name, `~\`) {
+		return fmt.Errorf("invalid selected name: %q", name)
+	}
+	if len(name) >= 2 && name[1] == ':' && isASCIIAlpha(name[0]) {
+		return fmt.Errorf("invalid selected name: %q", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("invalid selected name: %q", name)
+	}
+	return nil
+}
+
+func normalizeNewDirName(input string) (string, error) {
+	name := strings.TrimSpace(input)
+	if err := validateSelectedName(name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func (a *app) localSortChanged() {
@@ -706,8 +790,12 @@ func (a *app) startTransfer(protocol string) {
 	a.mu.Unlock()
 
 	upload := selection.Side == sideLocal
-	sources, target := transferPaths(selection, localDir, remoteDir)
-	flag, raw, err := buildTransferArgs(protocol, upload, selection.Dir != "", sources, target)
+	sources, target, err := transferPaths(selection, localDir, remoteDir)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	flag, raw, err := buildTransferArgs(protocol, upload, selection.hasDir(), sources, target)
 	if err != nil {
 		a.setStatus(err.Error())
 		return
@@ -825,6 +913,140 @@ func (a *app) promptDropUploadProtocol(summary, remoteDir string, rsyncAvailable
 	default:
 		return ""
 	}
+}
+
+func (a *app) newDirectory(requestedSide side) {
+	a.mu.Lock()
+	localDir := a.localNav.Current
+	remoteDir := a.remoteNav.Current
+	a.mu.Unlock()
+
+	currentDir := localDir
+	if requestedSide == sideRemote {
+		currentDir = remoteDir
+	}
+	if currentDir == "" {
+		a.setStatus("new folder requires a current directory")
+		return
+	}
+	name, ok := a.promptNewDirName(requestedSide, currentDir)
+	if !ok {
+		a.appendLogLine("new folder cancelled")
+		return
+	}
+	if requestedSide == sideLocal {
+		target, err := newLocalDirTarget(localDir, name)
+		if err != nil {
+			a.setStatus(err.Error())
+			return
+		}
+		a.runLocalNewDir(target)
+		return
+	}
+	target, err := newRemoteDirTarget(remoteDir, name)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	a.runRemoteNewDir(target)
+}
+
+func (a *app) promptNewDirName(selectedSide side, currentDir string) (string, bool) {
+	var dlg *walk.Dialog
+	var nameEdit *walk.LineEdit
+	var createButton *walk.PushButton
+	var cancelButton *walk.PushButton
+	var name string
+	scope := "local"
+	if selectedSide == sideRemote {
+		scope = "remote"
+	}
+	confirmCreate := func() {
+		name = nameEdit.Text()
+		dlg.Close(newDirConfirm)
+	}
+
+	err := (Dialog{
+		AssignTo:      &dlg,
+		Title:         "New folder",
+		MinSize:       Size{Width: 520, Height: 180},
+		Font:          appFont(),
+		Layout:        VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
+		CancelButton:  &cancelButton,
+		DefaultButton: &createButton,
+		Children: []Widget{
+			Label{Text: "Create a new " + scope + " folder under:"},
+			LineEdit{Text: currentDir, ReadOnly: true},
+			LineEdit{AssignTo: &nameEdit, OnKeyDown: func(key walk.Key) {
+				if key == walk.KeyReturn {
+					confirmCreate()
+				}
+			}},
+			Composite{Layout: HBox{MarginsZero: true, Spacing: 8}, Children: []Widget{
+				HSpacer{},
+				PushButton{AssignTo: &createButton, Text: "Create", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: confirmCreate},
+				PushButton{AssignTo: &cancelButton, Text: "Cancel", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
+					dlg.Close(walk.DlgCmdCancel)
+				}},
+			}},
+		},
+	}).Create(a.mw)
+	if err != nil {
+		a.setStatus("new folder dialog failed: " + err.Error())
+		return "", false
+	}
+	defer dlg.Dispose()
+	_ = nameEdit.SetFocus()
+	if dlg.Run() != newDirConfirm {
+		return "", false
+	}
+	name, err = normalizeNewDirName(name)
+	if err != nil {
+		a.setStatus(err.Error())
+		return "", false
+	}
+	return name, true
+}
+
+func (a *app) runLocalNewDir(target string) {
+	go func() {
+		if !a.startOperationWithStatus("creating local folder") {
+			return
+		}
+		defer a.endOperation()
+		a.appendLogLine("mkdir local: " + target)
+		if err := os.Mkdir(target, 0755); err != nil {
+			a.setStatus("create folder failed: " + err.Error())
+			return
+		}
+		a.setStatus("create folder complete")
+		a.refreshLocal()
+	}()
+}
+
+func (a *app) runRemoteNewDir(target string) {
+	command, err := buildRemoteMkdirCommand(target)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	args := buildChildArgs(a.rawArgs, "--no-reconnect", "--", command)
+	go func() {
+		if !a.startOperation() {
+			return
+		}
+		defer a.endOperation()
+		_, code, err := a.runChild(args, false)
+		if err != nil {
+			a.setStatus(fmt.Sprintf("create folder failed (%d): %v", code, err))
+			return
+		}
+		a.setStatus("create folder complete")
+		a.mu.Lock()
+		currentRemote := a.remoteNav.Current
+		a.mu.Unlock()
+		_ = a.loadRemoteUnderOperation(currentRemote)
+	}()
 }
 
 func (a *app) deleteSelection(requestedSide side) {
@@ -986,7 +1208,7 @@ func (a *app) promptRenameTarget(selectedSide side, source string) (string, bool
 
 	err := (Dialog{
 		AssignTo:      &dlg,
-		Title:         "Rename / move",
+		Title:         "Move / rename",
 		MinSize:       Size{Width: 640, Height: 180},
 		Font:          appFont(),
 		Layout:        VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
@@ -1001,7 +1223,7 @@ func (a *app) promptRenameTarget(selectedSide side, source string) (string, bool
 			}},
 			Composite{Layout: HBox{MarginsZero: true, Spacing: 8}, Children: []Widget{
 				HSpacer{},
-				PushButton{AssignTo: &renameButton, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: confirmRename},
+				PushButton{AssignTo: &renameButton, Text: "MV", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: confirmRename},
 				PushButton{AssignTo: &cancelButton, Text: "Cancel", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
 					dlg.Close(walk.DlgCmdCancel)
 				}},
@@ -1069,10 +1291,10 @@ func (a *app) runRemoteRename(source, target string) {
 	}()
 }
 
-func transferPaths(sel selectionState, localDir, remoteDir string) ([]string, string) {
-	names := sel.fileNames()
-	if sel.Dir != "" {
-		names = []string{sel.Dir}
+func transferPaths(sel selectionState, localDir, remoteDir string) ([]string, string, error) {
+	names, err := sel.names()
+	if err != nil {
+		return nil, "", err
 	}
 	sources := make([]string, 0, len(names))
 	switch sel.Side {
@@ -1081,15 +1303,15 @@ func transferPaths(sel selectionState, localDir, remoteDir string) ([]string, st
 		for _, name := range names {
 			sources = append(sources, normalizeLocalTransferPath(filepath.Join(localDir, name)))
 		}
-		return sources, remoteDir
+		return sources, remoteDir, nil
 	case sideRemote:
 		localDir = normalizeLocalTransferPath(localDir)
 		for _, name := range names {
 			sources = append(sources, remoteJoin(remoteDir, name))
 		}
-		return sources, localDir
+		return sources, localDir, nil
 	default:
-		return nil, ""
+		return nil, "", fmt.Errorf("no selected transfer sources")
 	}
 }
 
@@ -1097,9 +1319,9 @@ func deleteTargets(sel selectionState, localDir, remoteDir string) ([]string, er
 	if !sel.valid() {
 		return nil, fmt.Errorf("no selected delete targets")
 	}
-	names := sel.fileNames()
-	if sel.Dir != "" {
-		names = []string{sel.Dir}
+	names, err := sel.names()
+	if err != nil {
+		return nil, err
 	}
 	targets := make([]string, 0, len(names))
 	switch sel.Side {
@@ -1122,6 +1344,9 @@ func deleteTargets(sel selectionState, localDir, remoteDir string) ([]string, er
 }
 
 func renameTarget(sel selectionState, localDir, remoteDir string) (string, error) {
+	if !selectionSingle(sel) {
+		return "", fmt.Errorf("rename requires exactly one selected item")
+	}
 	targets, err := deleteTargets(sel, localDir, remoteDir)
 	if err != nil {
 		return "", err
@@ -1130,6 +1355,29 @@ func renameTarget(sel selectionState, localDir, remoteDir string) (string, error
 		return "", fmt.Errorf("rename requires exactly one selected item")
 	}
 	return targets[0], nil
+}
+
+func newLocalDirTarget(currentDir, name string) (string, error) {
+	if currentDir == "" {
+		return "", fmt.Errorf("empty local directory")
+	}
+	name, err := normalizeNewDirName(name)
+	if err != nil {
+		return "", err
+	}
+	currentDir = normalizeLocalTransferPath(currentDir)
+	return normalizeLocalTransferPath(filepath.Join(currentDir, name)), nil
+}
+
+func newRemoteDirTarget(currentDir, name string) (string, error) {
+	if currentDir == "" {
+		return "", fmt.Errorf("empty remote directory")
+	}
+	name, err := normalizeNewDirName(name)
+	if err != nil {
+		return "", err
+	}
+	return remoteJoin(currentDir, name), nil
 }
 
 func (a *app) startOperation() bool {
@@ -1158,7 +1406,7 @@ func (a *app) endOperation() {
 }
 
 func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
-	a.appendLogLine("command: " + formatChildCommand(a.exe, args))
+	a.appendMainLogLine("command: " + formatChildCommand(a.exe, args))
 	child, stdout, stderr, err := startChild(a.exe, args)
 	if err != nil {
 		return nil, 1, err
@@ -1166,7 +1414,7 @@ func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
 	a.mu.Lock()
 	a.current = child
 	a.mu.Unlock()
-	a.appendLogLine("spawn: " + childDescription(args))
+	a.appendMainLogLine("spawn: " + childDescription(args))
 
 	var stdoutBuf bytes.Buffer
 	var wg sync.WaitGroup
@@ -1177,11 +1425,11 @@ func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
 			_, _ = io.Copy(&stdoutBuf, stdout)
 			return
 		}
-		_, _ = io.Copy(io.MultiWriter(os.Stdout, guiLogWriter{a: a}), stdout)
+		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stdout, "child stdout"), guiLogWriter{a: a}), stdout)
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(io.MultiWriter(os.Stderr, guiLogWriter{a: a}), stderr)
+		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stderr, "child stderr"), guiLogWriter{a: a}), stderr)
 	}()
 
 	err = child.wait()
@@ -1193,7 +1441,7 @@ func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
 			code = exitErr.ExitCode()
 		}
 	}
-	a.appendLogLine(fmt.Sprintf("exit code: %d", code))
+	a.appendMainLogLine(fmt.Sprintf("exit code: %d", code))
 	return stdoutBuf.Bytes(), code, err
 }
 
@@ -1264,6 +1512,8 @@ func (a *app) killCurrent() {
 func (a *app) setButtons() {
 	a.mu.Lock()
 	enabled := !a.busy && a.selection.valid() && a.remoteNav.Current != ""
+	localNewDirEnabled := !a.busy && a.localNav.Current != ""
+	remoteNewDirEnabled := !a.busy && a.remoteNav.Current != ""
 	localDeleteEnabled := !a.busy && a.selection.valid() && a.selection.Side == sideLocal
 	remoteDeleteEnabled := !a.busy && a.selection.valid() && a.selection.Side == sideRemote && a.remoteNav.Current != ""
 	localRenameEnabled := localDeleteEnabled && selectionSingle(a.selection)
@@ -1276,6 +1526,8 @@ func (a *app) setButtons() {
 		_ = a.rsyncButton.SetText(transferButtonText("rsync", selection))
 		a.scpButton.SetEnabled(enabled)
 		a.rsyncButton.SetEnabled(enabled && rsyncEnabled)
+		a.localNewDir.SetEnabled(localNewDirEnabled)
+		a.remoteNewDir.SetEnabled(remoteNewDirEnabled)
 		a.localRename.SetEnabled(localRenameEnabled)
 		a.remoteRename.SetEnabled(remoteRenameEnabled)
 		a.localDelete.SetEnabled(localDeleteEnabled)
@@ -1284,10 +1536,7 @@ func (a *app) setButtons() {
 }
 
 func selectionSingle(selection selectionState) bool {
-	if selection.Dir != "" {
-		return true
-	}
-	return len(selection.Files) == 1
+	return selection.count() == 1
 }
 
 func transferButtonText(protocol string, selection selectionState) string {
@@ -1311,7 +1560,17 @@ func (a *app) setStatus(status string) {
 }
 
 func (a *app) appendLogLine(line string) {
-	a.appendLogText(time.Now().Format("15:04:05") + " " + line + "\r\n")
+	a.appendLogLineFrom("gui", line)
+}
+
+func (a *app) appendMainLogLine(line string) {
+	a.appendLogLineFrom("main", line)
+}
+
+func (a *app) appendLogLineFrom(source, line string) {
+	now := time.Now().Format("15:04:05")
+	a.appendLogText(now + " " + line + "\r\n")
+	writeTerminalLogLine(source, now, line)
 }
 
 func (a *app) appendLogText(text string) {
@@ -1347,6 +1606,52 @@ func (w guiLogWriter) Write(p []byte) (int, error) {
 	text = strings.ReplaceAll(text, "\n", "\r\n")
 	w.a.appendLogText(text)
 	return len(p), nil
+}
+
+type terminalSourceWriter struct {
+	out         io.Writer
+	source      string
+	atLineStart bool
+}
+
+func newTerminalSourceWriter(out io.Writer, source string) *terminalSourceWriter {
+	return &terminalSourceWriter{out: out, source: source, atLineStart: true}
+}
+
+func (w *terminalSourceWriter) Write(p []byte) (int, error) {
+	terminalLogMu.Lock()
+	defer terminalLogMu.Unlock()
+
+	written := 0
+	remaining := p
+	for len(remaining) > 0 {
+		if w.atLineStart {
+			if _, err := fmt.Fprintf(w.out, "%s [%s] ", time.Now().Format("15:04:05"), w.source); err != nil {
+				return written, err
+			}
+			w.atLineStart = false
+		}
+		next := bytes.IndexByte(remaining, '\n')
+		if next < 0 {
+			n, err := w.out.Write(remaining)
+			written += n
+			return written, err
+		}
+		n, err := w.out.Write(remaining[:next+1])
+		written += n
+		if err != nil {
+			return written, err
+		}
+		w.atLineStart = true
+		remaining = remaining[next+1:]
+	}
+	return len(p), nil
+}
+
+func writeTerminalLogLine(source, timestamp, line string) {
+	terminalLogMu.Lock()
+	defer terminalLogMu.Unlock()
+	fmt.Fprintf(os.Stderr, "%s [%s] %s\n", timestamp, source, line)
 }
 
 func listLocal(dir string) ([]fileEntry, error) {
@@ -1501,6 +1806,8 @@ func childDescription(args []string) string {
 			return "remote delete"
 		case strings.Contains(arg, `mv -- "$1" "$2"`):
 			return "remote rename"
+		case strings.Contains(arg, `mkdir -- "$1"`) || strings.Contains(arg, "flyssh-mkdir"):
+			return "remote mkdir"
 		}
 	}
 	return "flyssh subprocess"

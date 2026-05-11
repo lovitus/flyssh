@@ -1,5 +1,27 @@
 # Changelog / 更新日志
 
+## v1.0.27 (2026-05-11)
+
+### Features / 功能
+
+- **Allow mixed selections in the Windows companion GUI** — local and remote panes now allow selecting multiple files, multiple folders, or files and folders together while still enforcing a single transfer direction at a time / Windows 图形传输面板支持混合选择：本地和远端列表现在允许同时选择多个文件、多个文件夹或文件与文件夹混选，同时继续强制一次只能选择一个传输方向
+- **Add `+Dir` folder creation controls** — both panes now expose `+Dir` to create one child directory under the current path; local folders use `os.Mkdir`, and remote folders use the existing thin subprocess command path with the standard `--` command separator / 新增 `+Dir` 新建目录按钮：左右两侧都可在当前路径下创建一级子目录；本地使用 `os.Mkdir`，远端沿用轻量子进程命令路径并使用标准 `--` 命令分隔符
+
+### Improvements / 改进
+
+- **Tighten GUI child-name validation** — selected item names and new folder names now reject path-like values such as `.`, `..`, `~`, slash/backslash paths, and Windows drive forms before generating transfer, delete, move, or mkdir commands / 收紧 GUI 子项名称校验：选中项名称和新目录名现在会在生成传输、删除、移动或建目录命令前拒绝 `.`, `..`, `~`、斜杠/反斜杠路径和 Windows 盘符路径形态
+- **Shorten file operation button labels** — rename/move and delete controls are now shown as `MV` and `Del`, keeping the pane controls compact next to the path fields / 缩短文件操作按钮文案：重命名/移动与删除按钮现在显示为 `MV` 和 `Del`，让路径栏旁的面板控件更紧凑
+- **Prefix companion GUI terminal logs** — subprocess command, spawn, exit-code, stdout, and stderr lines now include source prefixes in the terminal output while the GUI log remains available in-window / 为 companion GUI 终端日志添加来源前缀：子进程命令、启动、退出码、stdout 和 stderr 在终端输出中带来源标记，同时 GUI 窗口内日志继续可用
+
+### Verification / 验证
+
+- `go test -count=1 ./pkg/wingui`
+- `go test -count=1 ./...`
+- `go test -race -count=1 ./pkg/wingui ./pkg/transfer ./pkg/cli .`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-1.0.27-windows-amd64.exe .`
+
+---
+
 ## v1.0.26 (2026-05-11)
 
 ### Bug Fixes / 修复

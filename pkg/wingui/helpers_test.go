@@ -327,6 +327,23 @@ func TestBuildRemoteRenameCommand(t *testing.T) {
 	}
 }
 
+func TestBuildRemoteMkdirCommand(t *testing.T) {
+	got, err := buildRemoteMkdirCommand("/tmp/a b/quote'file/-dash")
+	if err != nil {
+		t.Fatalf("buildRemoteMkdirCommand returned error: %v", err)
+	}
+	for _, want := range []string{
+		"sh -c",
+		`'mkdir -- "$1"'`,
+		"flyssh-mkdir",
+		`'/tmp/a b/quote'"'"'file/-dash'`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("command %q missing %q", got, want)
+		}
+	}
+}
+
 func TestSelectionSummaryLimitsPreview(t *testing.T) {
 	got := selectionSummary([]string{"1", "2", "3", "4", "5", "6"})
 	for _, want := range []string{"6 item(s)", "1", "5", "... and 1 more"} {
