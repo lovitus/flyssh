@@ -5,12 +5,13 @@
 ### Bug Fixes / 修复
 
 - **Fix Windows GUI rename/move target capture** — the rename dialog now captures the target path before closing the modal dialog, avoiding Walk control state loss that could report `rename target is empty` even after the field had been initialized / 修复 Windows GUI 重命名/移动目标路径读取：重命名对话框现在会在关闭模态窗口前读取目标路径，避免 Walk 控件状态在关闭后丢失导致已初始化的路径仍被报成 `rename target is empty`
+- **Give file lists priority over the log area** — the Windows GUI now caps the log text area height and gives the main file panes a higher stretch factor, so resizing the window no longer lets logs consume space intended for the file lists / 文件列表优先于日志区域：Windows GUI 现在限制日志文本区最大高度，并提高主文件面板的伸展权重，窗口变高时日志不会继续占用文件列表空间
 
 ### Verification / 验证
 
 - `go test -count=1 ./pkg/wingui`
 - `go test -count=1 ./...`
-- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-rename-dialog-fix.exe .`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-1.0.26-windows-amd64.exe .`
 
 ---
 

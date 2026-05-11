@@ -43,7 +43,8 @@ const (
 	buttonHeight         = 44
 	transferButtonHeight = 56
 	transferTopGap       = 12
-	logMinHeight         = 58
+	logMinHeight         = 46
+	logMaxHeight         = 86
 )
 
 const (
@@ -244,7 +245,7 @@ func (a *app) run() error {
 				Label{Text: "Status"},
 				LineEdit{AssignTo: &a.status, ReadOnly: true},
 			}},
-			Composite{Layout: HBox{MarginsZero: true, Spacing: 6}, Children: []Widget{
+			Composite{Layout: HBox{MarginsZero: true, Spacing: 6}, StretchFactor: 8, Children: []Widget{
 				Composite{Layout: VBox{MarginsZero: true, Spacing: 4}, StretchFactor: 1, Children: []Widget{
 					Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
 						Label{Text: "Local"},
@@ -303,7 +304,7 @@ func (a *app) run() error {
 				Label{Text: "Log"},
 				PushButton{Text: "Clear", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: a.clearLog},
 			}},
-			TextEdit{AssignTo: &a.log, ReadOnly: true, VScroll: true, HScroll: true, MinSize: Size{Height: logMinHeight}},
+			TextEdit{AssignTo: &a.log, ReadOnly: true, VScroll: true, HScroll: true, MinSize: Size{Height: logMinHeight}, MaxSize: Size{Height: logMaxHeight}},
 		},
 	}).Create(); err != nil {
 		return err
