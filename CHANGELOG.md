@@ -1,5 +1,27 @@
 # Changelog / 更新日志
 
+## v1.0.23 (2026-05-11)
+
+### Features / 功能
+
+- **Add delete and rename/move controls to the Windows companion GUI** — local and remote panes now expose `Delete` and `Rename` buttons that enable only for valid selections; delete shows a confirmation preview, and rename edits the full path so it can also be used as a move operation / Windows 图形传输面板新增删除与重命名/移动：本地和远端面板都会在有效选择时启用 `Delete` 与 `Rename`；删除会显示确认预览，重命名可编辑完整路径，因此也可用于移动
+- **Show remote Unix metadata in the Windows companion GUI** — remote listings now display best-effort `mode user:group` after the existing name, size, and time columns; unsupported targets leave the optional metadata blank without blocking browsing / Windows 图形传输面板显示远端 Unix 元数据：远端列表会在名称、大小、时间后追加 best-effort 的 `mode user:group`；目标机不支持时该增强字段留空，不影响浏览
+
+### Improvements / 改进
+
+- **Make unknown remote size/time explicit** — if remote `stat` cannot provide size or mtime, files now show `?` instead of silently treating the value as zero, and unknown values sort after known values / 明确显示未知的远端大小和时间：远端 `stat` 无法获取大小或修改时间时，文件显示 `?`，不再静默当作 0，排序时未知值排在已知值之后
+- **Keep GUI actions on the thin subprocess path** — remote delete and rename/move are executed through spawned FlySsh subprocess commands, matching the existing companion GUI architecture and avoiding new session/auth backends / GUI 操作继续保持轻量子进程架构：远端删除和重命名/移动通过 FlySsh 子进程命令执行，沿用现有 companion GUI 设计，不新增 session/auth 后端
+- **Improve button legibility** — Windows GUI buttons now use a bolder font while keeping the existing layout and control sizing / 改进按钮可读性：Windows GUI 按钮改为更粗字体，同时保持现有布局和控件尺寸
+
+### Verification / 验证
+
+- `go test -count=1 ./pkg/wingui`
+- `go test -count=1 ./...`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-1.0.23-windows-amd64.exe .`
+- `GOOS=windows GOARCH=amd64 go test -c ./pkg/wingui -o /tmp/wingui-1.0.23.test.exe`
+
+---
+
 ## v1.0.22 (2026-05-10)
 
 ### Features / 功能

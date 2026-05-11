@@ -18,6 +18,9 @@ type guiRemoteEntry struct {
 	IsDir bool   `json:"is_dir"`
 	Size  int64  `json:"size"`
 	MTime int64  `json:"mtime"`
+	Mode  string `json:"mode,omitempty"`
+	User  string `json:"user,omitempty"`
+	Group string `json:"group,omitempty"`
 }
 
 func runGUIInternalHome(opts *cli.Options) int {
@@ -96,15 +99,27 @@ for f in .* *; do
   [ "$f" = ".." ] && continue
   [ -e "$f" ] || [ -L "$f" ] || continue
   if [ -d "$f" ]; then isdir=1; else isdir=0; fi
+  size=''
+  mtime=''
   if size=$(stat -c %s -- "$f" 2>/dev/null); then
-    mtime=$(stat -c %Y -- "$f" 2>/dev/null || printf 0)
+    mtime=$(stat -c %Y -- "$f" 2>/dev/null || printf '')
   elif size=$(stat -f %z "$f" 2>/dev/null); then
-    mtime=$(stat -f %m "$f" 2>/dev/null || printf 0)
-  else
-    size=0
-    mtime=0
+    mtime=$(stat -f %m "$f" 2>/dev/null || printf '')
   fi
-  printf '%s\0%s\0%s\0%s\0' "$isdir" "$size" "$mtime" "$f"
+  mode=''
+  user=''
+  group=''
+  if meta=$(stat -c '%A	%U	%G' -- "$f" 2>/dev/null); then
+    if [ -n "$meta" ]; then
+      old_ifs=$IFS
+      IFS='	'
+      read -r mode user group <<EOF
+$meta
+EOF
+      IFS=$old_ifs
+    fi
+  fi
+  printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0' "$isdir" "$size" "$mtime" "$mode" "$user" "$group" "$f"
 done
 `
 	return "sh -c " + guiShellQuote(script) + " sh " + guiShellQuote(dir)
@@ -120,20 +135,20 @@ func parseGUIRemoteList(data []byte) ([]guiRemoteEntry, error) {
 	if len(parts) > 0 && len(parts[len(parts)-1]) == 0 {
 		parts = parts[:len(parts)-1]
 	}
-	if len(parts)%4 != 0 {
+	if len(parts)%7 != 0 {
 		return nil, fmt.Errorf("malformed remote listing: got %d fields", len(parts))
 	}
-	entries := make([]guiRemoteEntry, 0, len(parts)/4)
-	for i := 0; i < len(parts); i += 4 {
-		size, err := strconv.ParseInt(string(parts[i+1]), 10, 64)
+	entries := make([]guiRemoteEntry, 0, len(parts)/7)
+	for i := 0; i < len(parts); i += 7 {
+		name := string(parts[i+6])
+		size, err := parseGUIRemoteOptionalInt(parts[i+1], "size", name)
 		if err != nil {
-			return nil, fmt.Errorf("parse size for %q: %w", parts[i+3], err)
+			return nil, err
 		}
-		mtime, err := strconv.ParseInt(string(parts[i+2]), 10, 64)
+		mtime, err := parseGUIRemoteOptionalInt(parts[i+2], "mtime", name)
 		if err != nil {
-			return nil, fmt.Errorf("parse mtime for %q: %w", parts[i+3], err)
+			return nil, err
 		}
-		name := string(parts[i+3])
 		if name == "" || name == "." || name == ".." {
 			continue
 		}
@@ -142,9 +157,23 @@ func parseGUIRemoteList(data []byte) ([]guiRemoteEntry, error) {
 			IsDir: string(parts[i]) == "1",
 			Size:  size,
 			MTime: mtime,
+			Mode:  string(parts[i+3]),
+			User:  string(parts[i+4]),
+			Group: string(parts[i+5]),
 		})
 	}
 	return entries, nil
+}
+
+func parseGUIRemoteOptionalInt(data []byte, field, name string) (int64, error) {
+	if len(data) == 0 {
+		return -1, nil
+	}
+	value, err := strconv.ParseInt(string(data), 10, 64)
+	if err != nil {
+		return -1, fmt.Errorf("parse %s for %q: %w", field, name, err)
+	}
+	return value, nil
 }
 
 func sortGUIRemoteEntries(entries []guiRemoteEntry) {

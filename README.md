@@ -265,6 +265,31 @@ flyssh --socks 127.0.0.1:1080 u1@hop1 u2@hop2 --passwords 'p1,p2' \
   --rsync-upload '-av ./src/ /data/src/'
 ```
 
+### Windows companion GUI / Windows 图形传输面板
+
+`--wingui` opens a Windows-only companion panel for the current FlySsh route. It reuses the connection arguments already provided on the command line and starts child `flyssh.exe` processes for browsing and transfer; it is not a separate connection manager.
+
+`--wingui` 会打开一个仅 Windows 可用的当前链路传输面板。它复用命令行里已经给出的 FlySsh 连接参数，并通过子 `flyssh.exe` 进程完成浏览与传输；它不是独立连接管理器。
+
+```bash
+flyssh --socks 127.0.0.1:1080 user1@hop1 user2@target --passwords 'p1,p2' --wingui
+```
+
+The GUI supports:
+
+GUI 支持：
+
+- local and remote directory browsing with back/forward/up/refresh / 本地与远端目录浏览，支持后退、前进、上级、刷新
+- SCP and rsync upload/download buttons for the current selection / 对当前选择执行 SCP 或 rsync 上传/下载
+- drag local files or folders onto the remote list to upload after choosing `rsync`, `SCP`, or `Cancel` / 将本地文件或文件夹拖到远端列表后，可选择 `rsync`、`SCP` 或取消
+- delete selected local or remote items after confirmation / 确认后删除选中的本地或远端项目
+- rename or move one selected local or remote item by editing its full path / 通过编辑完整路径重命名或移动单个选中的本地或远端项目
+- remote size, modification time, and best-effort Unix `mode user:group`; unknown remote size/time is shown as `?` / 显示远端大小、修改时间，以及 best-effort 的 Unix `mode user:group`；未知的远端大小/时间显示为 `?`
+
+Authentication, host-key, passphrase, and MFA prompts still happen in the terminal. Keep the launching console visible while the GUI is running.
+
+认证、主机密钥、密钥口令和 MFA 提示仍在终端完成。GUI 运行期间请保留启动它的控制台窗口。
+
 Transfer caveat:
 
 传输注意事项：

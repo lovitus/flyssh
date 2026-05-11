@@ -60,6 +60,116 @@ func TestSortEntriesByTimeAndSizeDescending(t *testing.T) {
 	}
 }
 
+func TestSortEntriesUnknownTimeAndSizeLast(t *testing.T) {
+	byTime := []fileEntry{
+		{Name: "unknown", MTime: -1, Size: 10},
+		{Name: "new", MTime: 30, Size: 1},
+		{Name: "old", MTime: 10, Size: 30},
+	}
+	sortEntries(byTime, sortByTime)
+	if got, want := entryNames(byTime), []string{"new", "old", "unknown"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected time sort: got %#v want %#v", got, want)
+	}
+
+	bySize := []fileEntry{
+		{Name: "unknown", MTime: 30, Size: -1},
+		{Name: "large", MTime: 10, Size: 30},
+		{Name: "small", MTime: 20, Size: 1},
+	}
+	sortEntries(bySize, sortBySize)
+	if got, want := entryNames(bySize), []string{"large", "small", "unknown"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected size sort: got %#v want %#v", got, want)
+	}
+}
+
+func TestDeleteTargets(t *testing.T) {
+	localSel := newSelectionState()
+	localSel.Side = sideLocal
+	localSel.Files["a.txt"] = true
+	localSel.Files["b.txt"] = true
+	got, err := deleteTargets(localSel, `D:work`, "/remote")
+	if err != nil {
+		t.Fatalf("deleteTargets local returned error: %v", err)
+	}
+	want := []string{`D:\work\a.txt`, `D:\work\b.txt`}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected local targets: got %#v want %#v", got, want)
+	}
+
+	remoteSel := newSelectionState()
+	remoteSel.Side = sideRemote
+	remoteSel.Dir = "folder"
+	got, err = deleteTargets(remoteSel, `D:\work`, "/remote")
+	if err != nil {
+		t.Fatalf("deleteTargets remote returned error: %v", err)
+	}
+	want = []string{"/remote/folder"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected remote targets: got %#v want %#v", got, want)
+	}
+}
+
+func TestRenameTargetRequiresSingleSelection(t *testing.T) {
+	multi := newSelectionState()
+	multi.Side = sideLocal
+	multi.Files["a.txt"] = true
+	multi.Files["b.txt"] = true
+	if _, err := renameTarget(multi, `D:\work`, "/remote"); err == nil {
+		t.Fatal("expected multi-select rename error")
+	}
+
+	one := newSelectionState()
+	one.Side = sideRemote
+	one.Files["a.txt"] = true
+	got, err := renameTarget(one, `D:\work`, "/remote")
+	if err != nil {
+		t.Fatalf("renameTarget returned error: %v", err)
+	}
+	if want := "/remote/a.txt"; got != want {
+		t.Fatalf("unexpected rename target: got %q want %q", got, want)
+	}
+}
+
+func TestSelectionSingle(t *testing.T) {
+	empty := newSelectionState()
+	if selectionSingle(empty) {
+		t.Fatal("empty selection should not be single")
+	}
+	dir := newSelectionState()
+	dir.Side = sideLocal
+	dir.Dir = "folder"
+	if !selectionSingle(dir) {
+		t.Fatal("directory selection should be single")
+	}
+	files := newSelectionState()
+	files.Side = sideLocal
+	files.Files["a.txt"] = true
+	files.Files["b.txt"] = true
+	if selectionSingle(files) {
+		t.Fatal("multi-file selection should not be single")
+	}
+}
+
+func TestChildDescriptionDetectsRemoteDelete(t *testing.T) {
+	command, err := buildRemoteDeleteCommand([]string{"/tmp/a"})
+	if err != nil {
+		t.Fatalf("buildRemoteDeleteCommand returned error: %v", err)
+	}
+	if got, want := childDescription([]string{"user@host", command}), "remote delete"; got != want {
+		t.Fatalf("unexpected child description: got %q want %q", got, want)
+	}
+}
+
+func TestChildDescriptionDetectsRemoteRename(t *testing.T) {
+	command, err := buildRemoteRenameCommand("/tmp/a", "/tmp/b")
+	if err != nil {
+		t.Fatalf("buildRemoteRenameCommand returned error: %v", err)
+	}
+	if got, want := childDescription([]string{"user@host", command}), "remote rename"; got != want {
+		t.Fatalf("unexpected child description: got %q want %q", got, want)
+	}
+}
+
 func entryNames(entries []fileEntry) []string {
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {

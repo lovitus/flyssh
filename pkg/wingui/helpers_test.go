@@ -287,20 +287,102 @@ func TestDropUploadTransferArgs(t *testing.T) {
 	}
 }
 
+func TestBuildRemoteDeleteCommand(t *testing.T) {
+	got, err := buildRemoteDeleteCommand([]string{"/tmp/a b", "/tmp/quote'file", "/tmp/-dash"})
+	if err != nil {
+		t.Fatalf("buildRemoteDeleteCommand returned error: %v", err)
+	}
+	for _, want := range []string{
+		"sh -c",
+		`'rm -rf -- "$@"'`,
+		"flyssh-rm",
+		"'/tmp/a b'",
+		`'/tmp/quote'"'"'file'`,
+		"'/tmp/-dash'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("command %q missing %q", got, want)
+		}
+	}
+}
+
+func TestBuildRemoteRenameCommand(t *testing.T) {
+	got, err := buildRemoteRenameCommand("/tmp/a b", "/tmp/quote'file")
+	if err != nil {
+		t.Fatalf("buildRemoteRenameCommand returned error: %v", err)
+	}
+	for _, want := range []string{
+		"sh -c",
+		`'mv -- "$1" "$2"'`,
+		"flyssh-mv",
+		"'/tmp/a b'",
+		`'/tmp/quote'"'"'file'`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("command %q missing %q", got, want)
+		}
+	}
+}
+
+func TestSelectionSummaryLimitsPreview(t *testing.T) {
+	got := selectionSummary([]string{"1", "2", "3", "4", "5", "6"})
+	for _, want := range []string{"6 item(s)", "1", "5", "... and 1 more"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "\r\n6") {
+		t.Fatalf("summary should not include sixth path directly: %q", got)
+	}
+}
+
 func TestFormatEntryDisplayIncludesMetadata(t *testing.T) {
 	mtime := int64(1700000000)
 	expectedDate := time.Unix(mtime, 0).Format("2006-01-02")
-	got := formatEntryDisplay("file.txt", false, 1536, mtime)
+	got := formatEntryDisplay("file.txt", false, 1536, mtime, "-rw-r--r--", "alice", "staff")
 	for _, want := range []string{"file.txt", "1.5 KB", expectedDate} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("display %q missing %q", got, want)
 		}
 	}
-	dir := formatEntryDisplay("folder", true, 0, mtime)
+	if !strings.Contains(got, "-rw-r--r-- alice:staff") {
+		t.Fatalf("display %q missing owner metadata", got)
+	}
+	dir := formatEntryDisplay("folder", true, -1, mtime, "", "", "")
 	for _, want := range []string{"folder/", "<DIR>", expectedDate} {
 		if !strings.Contains(dir, want) {
 			t.Fatalf("display %q missing %q", dir, want)
 		}
+	}
+	if strings.Contains(dir, "?") {
+		t.Fatalf("directory display should not show unknown size: %q", dir)
+	}
+	unknown := formatEntryDisplay("unknown.txt", false, -1, -1, "", "", "")
+	if strings.Count(unknown, "?") < 2 {
+		t.Fatalf("unknown display should show size and mtime placeholders: %q", unknown)
+	}
+}
+
+func TestFormatOwnerMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		mode  string
+		user  string
+		group string
+		want  string
+	}{
+		{name: "all", mode: "-rw-r--r--", user: "alice", group: "staff", want: "-rw-r--r-- alice:staff"},
+		{name: "mode only", mode: "-rw-r--r--", want: "-rw-r--r--"},
+		{name: "user only", user: "alice", want: "alice"},
+		{name: "group only", group: "staff", want: "staff"},
+		{name: "empty", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatOwnerMode(tt.mode, tt.user, tt.group); got != tt.want {
+				t.Fatalf("unexpected owner mode: got %q want %q", got, tt.want)
+			}
+		})
 	}
 }
 

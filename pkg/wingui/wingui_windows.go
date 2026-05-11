@@ -50,6 +50,8 @@ const (
 	dropUploadCancel = walk.DlgCmdCancel
 	dropUploadRsync  = 1001
 	dropUploadSCP    = 1002
+	deleteConfirm    = 1003
+	renameConfirm    = 1004
 )
 
 func appFont() Font {
@@ -57,7 +59,7 @@ func appFont() Font {
 }
 
 func buttonFont() Font {
-	return Font{PointSize: 11}
+	return Font{PointSize: 11, Bold: true}
 }
 
 func listFont() Font {
@@ -69,6 +71,9 @@ type fileEntry struct {
 	IsDir   bool
 	Size    int64
 	MTime   int64
+	Mode    string
+	User    string
+	Group   string
 	Display string
 }
 
@@ -170,18 +175,22 @@ type app struct {
 	rawArgs []string
 	exe     string
 
-	mw          *walk.MainWindow
-	status      *walk.LineEdit
-	summary     *walk.LineEdit
-	localPath   *walk.LineEdit
-	remotePath  *walk.LineEdit
-	localLB     *walk.ListBox
-	remoteLB    *walk.ListBox
-	localSort   *walk.ComboBox
-	remoteSort  *walk.ComboBox
-	scpButton   *walk.PushButton
-	rsyncButton *walk.PushButton
-	log         *walk.TextEdit
+	mw           *walk.MainWindow
+	status       *walk.LineEdit
+	summary      *walk.LineEdit
+	localPath    *walk.LineEdit
+	remotePath   *walk.LineEdit
+	localLB      *walk.ListBox
+	remoteLB     *walk.ListBox
+	localSort    *walk.ComboBox
+	remoteSort   *walk.ComboBox
+	scpButton    *walk.PushButton
+	rsyncButton  *walk.PushButton
+	localRename  *walk.PushButton
+	remoteRename *walk.PushButton
+	localDelete  *walk.PushButton
+	remoteDelete *walk.PushButton
+	log          *walk.TextEdit
 
 	mu                sync.Mutex
 	localNav          navState
@@ -246,10 +255,14 @@ func (a *app) run() error {
 						Label{Text: "Sort"},
 						ComboBox{AssignTo: &a.localSort, Model: sortModeLabels(), CurrentIndex: 0, MaxSize: Size{Width: 92}, OnCurrentIndexChanged: a.localSortChanged},
 					}},
-					LineEdit{AssignTo: &a.localPath, OnKeyDown: func(key walk.Key) {
-						if key == walk.KeyReturn {
-							a.gotoLocalPath(a.localPath.Text())
-						}
+					Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
+						LineEdit{AssignTo: &a.localPath, StretchFactor: 1, OnKeyDown: func(key walk.Key) {
+							if key == walk.KeyReturn {
+								a.gotoLocalPath(a.localPath.Text())
+							}
+						}},
+						PushButton{AssignTo: &a.localRename, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: func() { a.renameSelection(sideLocal) }},
+						PushButton{AssignTo: &a.localDelete, Text: "Delete", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: func() { a.deleteSelection(sideLocal) }},
 					}},
 					ListBox{AssignTo: &a.localLB, Font: listFont(), MultiSelection: true, StretchFactor: 1,
 						OnSelectedIndexesChanged: a.localSelectionChanged,
@@ -272,10 +285,14 @@ func (a *app) run() error {
 						Label{Text: "Sort"},
 						ComboBox{AssignTo: &a.remoteSort, Model: sortModeLabels(), CurrentIndex: 0, MaxSize: Size{Width: 92}, OnCurrentIndexChanged: a.remoteSortChanged},
 					}},
-					LineEdit{AssignTo: &a.remotePath, OnKeyDown: func(key walk.Key) {
-						if key == walk.KeyReturn {
-							a.gotoRemotePath(a.remotePath.Text())
-						}
+					Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
+						LineEdit{AssignTo: &a.remotePath, StretchFactor: 1, OnKeyDown: func(key walk.Key) {
+							if key == walk.KeyReturn {
+								a.gotoRemotePath(a.remotePath.Text())
+							}
+						}},
+						PushButton{AssignTo: &a.remoteRename, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: func() { a.renameSelection(sideRemote) }},
+						PushButton{AssignTo: &a.remoteDelete, Text: "Delete", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: func() { a.deleteSelection(sideRemote) }},
 					}},
 					ListBox{AssignTo: &a.remoteLB, Font: listFont(), MultiSelection: true, StretchFactor: 1,
 						OnSelectedIndexesChanged: a.remoteSelectionChanged,
@@ -384,7 +401,10 @@ func (a *app) loadRemoteUnderOperation(dir string) error {
 			IsDir:   item.IsDir,
 			Size:    item.Size,
 			MTime:   item.MTime,
-			Display: formatEntryDisplay(item.Name, item.IsDir, item.Size, item.MTime),
+			Mode:    item.Mode,
+			User:    item.User,
+			Group:   item.Group,
+			Display: formatEntryDisplay(item.Name, item.IsDir, item.Size, item.MTime, item.Mode, item.User, item.Group),
 		})
 	}
 	a.mu.Lock()
@@ -806,6 +826,238 @@ func (a *app) promptDropUploadProtocol(summary, remoteDir string, rsyncAvailable
 	}
 }
 
+func (a *app) deleteSelection(requestedSide side) {
+	a.mu.Lock()
+	selection := a.selection
+	localDir := a.localNav.Current
+	remoteDir := a.remoteNav.Current
+	a.mu.Unlock()
+	if selection.Side != requestedSide || !selection.valid() {
+		a.setStatus("delete requires a selection")
+		return
+	}
+	targets, err := deleteTargets(selection, localDir, remoteDir)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	if !a.promptDeleteConfirm(requestedSide, targets) {
+		a.appendLogLine("delete cancelled")
+		return
+	}
+	if requestedSide == sideLocal {
+		a.runLocalDelete(targets)
+		return
+	}
+	a.runRemoteDelete(targets)
+}
+
+func (a *app) promptDeleteConfirm(selectedSide side, targets []string) bool {
+	var dlg *walk.Dialog
+	var cancelButton *walk.PushButton
+	scope := "local"
+	if selectedSide == sideRemote {
+		scope = "remote"
+	}
+	message := "Delete selected " + scope + " item(s)?\r\n\r\n" + selectionSummary(targets) + "\r\n\r\nThis cannot be undone."
+
+	err := (Dialog{
+		AssignTo:      &dlg,
+		Title:         "Confirm delete",
+		MinSize:       Size{Width: 560, Height: 320},
+		Font:          appFont(),
+		Layout:        VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
+		CancelButton:  &cancelButton,
+		DefaultButton: &cancelButton,
+		Children: []Widget{
+			Label{Text: "Confirm delete"},
+			TextEdit{Text: message, ReadOnly: true, VScroll: true, MinSize: Size{Height: 170}},
+			Composite{Layout: HBox{MarginsZero: true, Spacing: 8}, Children: []Widget{
+				HSpacer{},
+				PushButton{Text: "Delete", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
+					dlg.Close(deleteConfirm)
+				}},
+				PushButton{AssignTo: &cancelButton, Text: "Cancel", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
+					dlg.Close(walk.DlgCmdCancel)
+				}},
+			}},
+		},
+	}).Create(a.mw)
+	if err != nil {
+		a.setStatus("delete confirm failed: " + err.Error())
+		return false
+	}
+	defer dlg.Dispose()
+	return dlg.Run() == deleteConfirm
+}
+
+func (a *app) runLocalDelete(targets []string) {
+	go func() {
+		if !a.startOperationWithStatus("deleting local selection") {
+			return
+		}
+		defer a.endOperation()
+		for _, target := range targets {
+			a.appendLogLine("delete local: " + target)
+			if err := os.RemoveAll(target); err != nil {
+				a.setStatus("delete failed: " + err.Error())
+				return
+			}
+		}
+		a.setStatus("delete complete")
+		a.refreshLocal()
+	}()
+}
+
+func (a *app) runRemoteDelete(targets []string) {
+	command, err := buildRemoteDeleteCommand(targets)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	args := buildChildArgs(a.rawArgs, "--no-reconnect", command)
+	go func() {
+		if !a.startOperation() {
+			return
+		}
+		defer a.endOperation()
+		_, code, err := a.runChild(args, false)
+		if err != nil {
+			a.setStatus(fmt.Sprintf("delete failed (%d): %v", code, err))
+			return
+		}
+		a.setStatus("delete complete")
+		a.mu.Lock()
+		currentRemote := a.remoteNav.Current
+		a.mu.Unlock()
+		_ = a.loadRemoteUnderOperation(currentRemote)
+	}()
+}
+
+func (a *app) renameSelection(requestedSide side) {
+	a.mu.Lock()
+	selection := a.selection
+	localDir := a.localNav.Current
+	remoteDir := a.remoteNav.Current
+	a.mu.Unlock()
+	if selection.Side != requestedSide || !selection.valid() {
+		a.setStatus("rename requires a selection")
+		return
+	}
+	source, err := renameTarget(selection, localDir, remoteDir)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	target, ok := a.promptRenameTarget(requestedSide, source)
+	if !ok {
+		a.appendLogLine("rename cancelled")
+		return
+	}
+	if requestedSide == sideLocal {
+		target = normalizeLocalTransferPath(target)
+	}
+	if target == source {
+		a.setStatus("rename skipped: target is unchanged")
+		return
+	}
+	if requestedSide == sideLocal {
+		a.runLocalRename(source, target)
+		return
+	}
+	a.runRemoteRename(source, target)
+}
+
+func (a *app) promptRenameTarget(selectedSide side, source string) (string, bool) {
+	var dlg *walk.Dialog
+	var targetEdit *walk.LineEdit
+	var renameButton *walk.PushButton
+	var cancelButton *walk.PushButton
+	scope := "local"
+	if selectedSide == sideRemote {
+		scope = "remote"
+	}
+
+	err := (Dialog{
+		AssignTo:      &dlg,
+		Title:         "Rename / move",
+		MinSize:       Size{Width: 640, Height: 180},
+		Font:          appFont(),
+		Layout:        VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
+		CancelButton:  &cancelButton,
+		DefaultButton: &renameButton,
+		Children: []Widget{
+			Label{Text: "Edit the full " + scope + " path"},
+			LineEdit{AssignTo: &targetEdit, Text: source},
+			Composite{Layout: HBox{MarginsZero: true, Spacing: 8}, Children: []Widget{
+				HSpacer{},
+				PushButton{AssignTo: &renameButton, Text: "Rename", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
+					dlg.Close(renameConfirm)
+				}},
+				PushButton{AssignTo: &cancelButton, Text: "Cancel", Font: buttonFont(), MinSize: Size{Width: 96, Height: buttonHeight}, OnClicked: func() {
+					dlg.Close(walk.DlgCmdCancel)
+				}},
+			}},
+		},
+	}).Create(a.mw)
+	if err != nil {
+		a.setStatus("rename dialog failed: " + err.Error())
+		return "", false
+	}
+	defer dlg.Dispose()
+	_ = targetEdit.SetFocus()
+	if dlg.Run() != renameConfirm {
+		return "", false
+	}
+	target := targetEdit.Text()
+	if strings.TrimSpace(target) == "" {
+		a.setStatus("rename target is empty")
+		return "", false
+	}
+	return target, true
+}
+
+func (a *app) runLocalRename(source, target string) {
+	go func() {
+		if !a.startOperationWithStatus("renaming local selection") {
+			return
+		}
+		defer a.endOperation()
+		a.appendLogLine("rename local: " + source + " -> " + target)
+		if err := os.Rename(source, target); err != nil {
+			a.setStatus("rename failed: " + err.Error())
+			return
+		}
+		a.setStatus("rename complete")
+		a.refreshLocal()
+	}()
+}
+
+func (a *app) runRemoteRename(source, target string) {
+	command, err := buildRemoteRenameCommand(source, target)
+	if err != nil {
+		a.setStatus(err.Error())
+		return
+	}
+	args := buildChildArgs(a.rawArgs, "--no-reconnect", command)
+	go func() {
+		if !a.startOperation() {
+			return
+		}
+		defer a.endOperation()
+		_, code, err := a.runChild(args, false)
+		if err != nil {
+			a.setStatus(fmt.Sprintf("rename failed (%d): %v", code, err))
+			return
+		}
+		a.setStatus("rename complete")
+		a.mu.Lock()
+		currentRemote := a.remoteNav.Current
+		a.mu.Unlock()
+		_ = a.loadRemoteUnderOperation(currentRemote)
+	}()
+}
+
 func transferPaths(sel selectionState, localDir, remoteDir string) ([]string, string) {
 	names := sel.fileNames()
 	if sel.Dir != "" {
@@ -830,7 +1082,50 @@ func transferPaths(sel selectionState, localDir, remoteDir string) ([]string, st
 	}
 }
 
+func deleteTargets(sel selectionState, localDir, remoteDir string) ([]string, error) {
+	if !sel.valid() {
+		return nil, fmt.Errorf("no selected delete targets")
+	}
+	names := sel.fileNames()
+	if sel.Dir != "" {
+		names = []string{sel.Dir}
+	}
+	targets := make([]string, 0, len(names))
+	switch sel.Side {
+	case sideLocal:
+		localDir = normalizeLocalTransferPath(localDir)
+		for _, name := range names {
+			targets = append(targets, normalizeLocalTransferPath(filepath.Join(localDir, name)))
+		}
+	case sideRemote:
+		if remoteDir == "" {
+			return nil, fmt.Errorf("empty remote directory")
+		}
+		for _, name := range names {
+			targets = append(targets, remoteJoin(remoteDir, name))
+		}
+	default:
+		return nil, fmt.Errorf("no selected delete targets")
+	}
+	return targets, nil
+}
+
+func renameTarget(sel selectionState, localDir, remoteDir string) (string, error) {
+	targets, err := deleteTargets(sel, localDir, remoteDir)
+	if err != nil {
+		return "", err
+	}
+	if len(targets) != 1 {
+		return "", fmt.Errorf("rename requires exactly one selected item")
+	}
+	return targets[0], nil
+}
+
 func (a *app) startOperation() bool {
+	return a.startOperationWithStatus(promptNotice)
+}
+
+func (a *app) startOperationWithStatus(status string) bool {
 	a.mu.Lock()
 	if a.busy {
 		a.mu.Unlock()
@@ -838,7 +1133,7 @@ func (a *app) startOperation() bool {
 	}
 	a.busy = true
 	a.mu.Unlock()
-	a.setStatus(promptNotice)
+	a.setStatus(status)
 	a.setButtons()
 	return true
 }
@@ -958,6 +1253,10 @@ func (a *app) killCurrent() {
 func (a *app) setButtons() {
 	a.mu.Lock()
 	enabled := !a.busy && a.selection.valid() && a.remoteNav.Current != ""
+	localDeleteEnabled := !a.busy && a.selection.valid() && a.selection.Side == sideLocal
+	remoteDeleteEnabled := !a.busy && a.selection.valid() && a.selection.Side == sideRemote && a.remoteNav.Current != ""
+	localRenameEnabled := localDeleteEnabled && selectionSingle(a.selection)
+	remoteRenameEnabled := remoteDeleteEnabled && selectionSingle(a.selection)
 	rsyncEnabled := a.rsyncAvailable
 	selection := a.selection
 	a.mu.Unlock()
@@ -966,7 +1265,18 @@ func (a *app) setButtons() {
 		_ = a.rsyncButton.SetText(transferButtonText("rsync", selection))
 		a.scpButton.SetEnabled(enabled)
 		a.rsyncButton.SetEnabled(enabled && rsyncEnabled)
+		a.localRename.SetEnabled(localRenameEnabled)
+		a.remoteRename.SetEnabled(remoteRenameEnabled)
+		a.localDelete.SetEnabled(localDeleteEnabled)
+		a.remoteDelete.SetEnabled(remoteDeleteEnabled)
 	})
+}
+
+func selectionSingle(selection selectionState) bool {
+	if selection.Dir != "" {
+		return true
+	}
+	return len(selection.Files) == 1
 }
 
 func transferButtonText(protocol string, selection selectionState) string {
@@ -1051,7 +1361,7 @@ func listLocal(dir string) ([]fileEntry, error) {
 			IsDir:   isDir,
 			Size:    size,
 			MTime:   mtime,
-			Display: formatEntryDisplay(entry.Name(), isDir, size, mtime),
+			Display: formatEntryDisplay(entry.Name(), isDir, size, mtime, "", "", ""),
 		})
 	}
 	sortEntries(result, sortByName)
@@ -1065,16 +1375,31 @@ func sortEntries(entries []fileEntry, mode sortMode) {
 		}
 		switch mode {
 		case sortByTime:
-			if entries[i].MTime != entries[j].MTime {
-				return entries[i].MTime > entries[j].MTime
+			if less, ok := sortValueDescUnknownLast(entries[i].MTime, entries[j].MTime); ok {
+				return less
 			}
 		case sortBySize:
-			if entries[i].Size != entries[j].Size {
-				return entries[i].Size > entries[j].Size
+			if less, ok := sortValueDescUnknownLast(entries[i].Size, entries[j].Size); ok {
+				return less
 			}
 		}
 		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
+}
+
+func sortValueDescUnknownLast(left, right int64) (bool, bool) {
+	leftUnknown := left < 0
+	rightUnknown := right < 0
+	if leftUnknown || rightUnknown {
+		if leftUnknown != rightUnknown {
+			return !leftUnknown, true
+		}
+		return false, false
+	}
+	if left != right {
+		return left > right, true
+	}
+	return false, false
 }
 
 func sortModeLabels() []string {
@@ -1161,6 +1486,10 @@ func childDescription(args []string) string {
 			return "rsync upload"
 		case arg == "--rsync-download":
 			return "rsync download"
+		case strings.Contains(arg, `rm -rf -- "$@"`):
+			return "remote delete"
+		case strings.Contains(arg, `mv -- "$1" "$2"`):
+			return "remote rename"
 		}
 	}
 	return "flyssh subprocess"

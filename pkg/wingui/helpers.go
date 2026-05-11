@@ -15,6 +15,9 @@ type remoteEntry struct {
 	IsDir bool   `json:"is_dir"`
 	Size  int64  `json:"size"`
 	MTime int64  `json:"mtime"`
+	Mode  string `json:"mode"`
+	User  string `json:"user"`
+	Group string `json:"group"`
 }
 
 type statFunc func(string) (os.FileInfo, error)
@@ -140,6 +143,38 @@ func buildTransferArgs(protocol string, upload bool, directory bool, sources []s
 	return flag, strings.Join(parts, " "), nil
 }
 
+func buildRemoteDeleteCommand(targets []string) (string, error) {
+	if len(targets) == 0 {
+		return "", fmt.Errorf("no selected delete targets")
+	}
+	parts := []string{"sh", "-c", shellQuote(`rm -rf -- "$@"`), "flyssh-rm"}
+	for _, target := range targets {
+		if target == "" {
+			return "", fmt.Errorf("empty delete target")
+		}
+		parts = append(parts, shellQuote(target))
+	}
+	return strings.Join(parts, " "), nil
+}
+
+func buildRemoteRenameCommand(source, target string) (string, error) {
+	if source == "" {
+		return "", fmt.Errorf("empty rename source")
+	}
+	if strings.TrimSpace(target) == "" {
+		return "", fmt.Errorf("empty rename target")
+	}
+	parts := []string{
+		"sh",
+		"-c",
+		shellQuote(`mv -- "$1" "$2"`),
+		"flyssh-mv",
+		shellQuote(source),
+		shellQuote(target),
+	}
+	return strings.Join(parts, " "), nil
+}
+
 func normalizeLocalTransferPath(path string) string {
 	if len(path) >= 2 && path[1] == ':' && isASCIILetter(path[0]) {
 		if len(path) == 2 {
@@ -198,6 +233,23 @@ func droppedPathsSummary(sources []string, fileCount, dirCount int) string {
 		b.WriteString(sources[i])
 	}
 	if more := len(sources) - limit; more > 0 {
+		fmt.Fprintf(&b, "\r\n... and %d more", more)
+	}
+	return b.String()
+}
+
+func selectionSummary(paths []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d item(s)", len(paths))
+	limit := len(paths)
+	if limit > 5 {
+		limit = 5
+	}
+	for i := 0; i < limit; i++ {
+		b.WriteString("\r\n")
+		b.WriteString(paths[i])
+	}
+	if more := len(paths) - limit; more > 0 {
 		fmt.Fprintf(&b, "\r\n... and %d more", more)
 	}
 	return b.String()
@@ -358,21 +410,25 @@ func displayName(name string, isDir bool) string {
 	return name
 }
 
-func formatEntryDisplay(name string, isDir bool, size int64, mtime int64) string {
+func formatEntryDisplay(name string, isDir bool, size int64, mtime int64, mode, user, group string) string {
 	kind := formatSize(size)
 	if isDir {
 		kind = "<DIR>"
 	}
-	when := ""
-	if mtime > 0 {
+	when := "?"
+	if mtime >= 0 {
 		when = time.Unix(mtime, 0).Format("2006-01-02 15:04")
 	}
-	return fmt.Sprintf("%-48s %12s %16s", displayName(name, isDir), kind, when)
+	display := fmt.Sprintf("%-48s %12s %16s", displayName(name, isDir), kind, when)
+	if meta := formatOwnerMode(mode, user, group); meta != "" {
+		display += " " + meta
+	}
+	return display
 }
 
 func formatSize(size int64) string {
 	if size < 0 {
-		size = 0
+		return "?"
 	}
 	const unit = int64(1024)
 	if size < unit {
@@ -386,4 +442,27 @@ func formatSize(size int64) string {
 		}
 	}
 	return fmt.Sprintf("%.1f PB", value/float64(unit))
+}
+
+func formatOwnerMode(mode, user, group string) string {
+	mode = strings.TrimSpace(mode)
+	user = strings.TrimSpace(user)
+	group = strings.TrimSpace(group)
+	owner := ""
+	switch {
+	case user != "" && group != "":
+		owner = user + ":" + group
+	case user != "":
+		owner = user
+	case group != "":
+		owner = group
+	}
+	switch {
+	case mode != "" && owner != "":
+		return mode + " " + owner
+	case mode != "":
+		return mode
+	default:
+		return owner
+	}
 }
