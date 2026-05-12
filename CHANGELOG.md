@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## v1.0.30 (2026-05-12)
+
+### Bug Fixes / 修复
+
+- **Fix SSH gateway rsync hang after 100% transfer** — after a successful rsync transfer the session now exits immediately and prints the final stats line. Root cause: `exit-status` channel request was forwarded by a detached goroutine that could lose the race against `downCh.Close()`, leaving the client waiting for an exit code that never arrived. Fix: the upstream→downstream request goroutine is now waited on (`upReqWg`) after stdout finishes but before the downstream channel is closed, guaranteeing `exit-status` reaches the client. `upReqWg.Wait()` completes promptly because the SSH library closes `upReqs` when the upstream server sends `SSH_MSG_CHANNEL_CLOSE` (immediately after `exit-status` + EOF) / 修复 SSH 网关 rsync 传输 100% 后挂住的问题。根因：`exit-status` 请求由 detached goroutine 转发，可能在 `downCh.Close()` 之前输给调度竞争，导致客户端永远等不到退出码。修复：stdout 完成后增加 `upReqWg.Wait()`，确保上游请求（含 `exit-status`）全部转发给下游后再关闭通道。
+
+### Verification / 验证
+
+- `go build ./...`
+- `go test ./...`
+- Manual: `rsync -avzhP -e 'ssh -p 2222' file user@127.0.0.1:/tmp` completes and prints stats without hanging
+- Manual: subsequent rsync runs (no-op incremental) also exit immediately
+
+---
+
 ## v1.0.29 (2026-05-12)
 
 ### Bug Fixes / 修复
