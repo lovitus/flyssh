@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## v1.0.29 (2026-05-12)
+
+### Bug Fixes / 修复
+
+- **Fix SSH gateway session hang after SCP / exit** — after `scp` completes or the user types `exit`, the session now exits immediately instead of hanging for 30–60 seconds. Root cause: `handleSession` used a single `WaitGroup` for all 6 goroutines (stdout×2, stderr×2, request×2); stderr and request goroutines only unblock when channels are `Close()`d, but `Close()` was placed after `wg.Wait()`, creating a circular wait. Fix: stderr and request goroutines are now detached; only the two stdout `io.Copy` goroutines are waited on, after which `Close()` is called on both channels to immediately unblock the rest / 修复 SSH 网关会话在 SCP 传输完成或用户执行 `exit` 后挂住的问题。根因：`handleSession` 对全部 6 个 goroutine 共用同一个 `WaitGroup`，stderr 和 request goroutine 需要 channel `Close()` 才能退出，但 `Close()` 在 `wg.Wait()` 之后，造成循环等待。修复：stderr 和 request goroutine 改为后台运行不纳入等待，stdout 双向复制完成后立即 `Close()` 双向 channel。
+
+### Verification / 验证
+
+- `go build ./...`
+- `go test ./...`
+- Manual: `scp -P 2222` completes and exits immediately
+- Manual: interactive `ssh` session `exit` returns immediately
+
+---
+
 ## v1.0.28 (2026-05-12)
 
 ### Features / 功能
