@@ -62,12 +62,22 @@ func handleSession(newCh ssh.NewChannel, upstream *ssh.Client, verbose bool) {
 		return
 	}
 
-	// Stderr and request proxy run in the background; closing the channels
-	// (below) will unblock them once data transfer is done.
+	// Stderr and down→up request proxy run fully in the background.
 	go io.Copy(upCh.Stderr(), downCh.Stderr())
 	go io.Copy(downCh.Stderr(), upCh.Stderr())
 	go proxyRequests(downReqs, upCh, downstreamToUpstream, verbose, "down→up")
-	go proxyRequests(upReqs, downCh, upstreamToDownstream, verbose, "up→down")
+
+	// up→down request proxy (carries exit-status) must be drained before we
+	// close the downstream channel, otherwise the client never receives the
+	// exit code and hangs (observed with rsync after 100% transfer).
+	// upReqs is closed by the SSH library when the upstream channel sends
+	// SSH_MSG_CHANNEL_CLOSE, which happens naturally right after stdout EOF.
+	var upReqWg sync.WaitGroup
+	upReqWg.Add(1)
+	go func() {
+		defer upReqWg.Done()
+		proxyRequests(upReqs, downCh, upstreamToDownstream, verbose, "up→down")
+	}()
 
 	// Wait only for bidirectional stdout to finish, then close both channels.
 	// This unblocks the stderr and request goroutines immediately, preventing
@@ -85,6 +95,10 @@ func handleSession(newCh ssh.NewChannel, upstream *ssh.Client, verbose bool) {
 		downCh.CloseWrite()
 	}()
 	wg.Wait()
+
+	// Drain remaining upstream requests (exit-status, exit-signal) so the
+	// client receives the exit code before the channel is torn down.
+	upReqWg.Wait()
 
 	downCh.Close()
 	upCh.Close()
