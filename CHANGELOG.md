@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.31 (2026-05-12)
+
+### Bug Fixes / 修复
+
+- **Fix SSH gateway rsync hang (root cause: CloseWrite vs Close)** — rsync and some SSH clients hold their write side open until they receive `SSH_MSG_CHANNEL_CLOSE`, not just `SSH_MSG_CHANNEL_EOF`. The v1.0.30 fix sent only EOF (`CloseWrite`) after upstream closed, which created a deadlock: `wg.Wait()` blocked on `io.Copy(upCh, downCh)` which blocked on the client's write side which blocked on our CLOSE. Fix: after upstream EOF, drain exit-status (`upReqWg.Wait()`), then call `downCh.Close()` (full CLOSE) — this unblocks the client, which closes its write side, which unblocks the downstream→upstream goroutine / 修复 SSH 网关 rsync hang 根因：发送 CloseWrite（EOF）不够，rsync 等 SSH_MSG_CHANNEL_CLOSE 才会关自己的 write side。改为上游关闭后先等 exit-status 转发，再调 downCh.Close() 发完整 CLOSE，破解死锁。
+
+### Verification / 验证
+
+- `go build ./...`
+- `go test ./...`
+- Manual: rsync with files transferred — completes and prints stats without hanging
+- Manual: rsync with no files to transfer (incremental, file unchanged) — exits immediately with stats
+- Manual: `ssh`, `scp` — unaffected
+
+---
+
 ## v1.0.30 (2026-05-12)
 
 ### Bug Fixes / 修复
