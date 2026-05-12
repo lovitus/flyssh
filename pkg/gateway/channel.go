@@ -62,16 +62,16 @@ func handleSession(newCh ssh.NewChannel, upstream *ssh.Client, verbose bool) {
 		return
 	}
 
-	// Stderr and down→up request proxy run fully in the background.
+	// Stderr and down→up request proxy run fully in the background; closing
+	// the channels below will unblock them once the session ends.
 	go io.Copy(upCh.Stderr(), downCh.Stderr())
 	go io.Copy(downCh.Stderr(), upCh.Stderr())
 	go proxyRequests(downReqs, upCh, downstreamToUpstream, verbose, "down→up")
 
-	// up→down request proxy (carries exit-status) must be drained before we
-	// close the downstream channel, otherwise the client never receives the
-	// exit code and hangs (observed with rsync after 100% transfer).
-	// upReqs is closed by the SSH library when the upstream channel sends
-	// SSH_MSG_CHANNEL_CLOSE, which happens naturally right after stdout EOF.
+	// up→down request proxy carries exit-status and must be drained before
+	// we close the downstream channel.  upReqs is closed by the SSH library
+	// when the upstream sends SSH_MSG_CHANNEL_CLOSE (which arrives right
+	// after exit-status + EOF in the normal SSH protocol sequence).
 	var upReqWg sync.WaitGroup
 	upReqWg.Add(1)
 	go func() {
@@ -79,29 +79,30 @@ func handleSession(newCh ssh.NewChannel, upstream *ssh.Client, verbose bool) {
 		proxyRequests(upReqs, downCh, upstreamToDownstream, verbose, "up→down")
 	}()
 
-	// Wait only for bidirectional stdout to finish, then close both channels.
-	// This unblocks the stderr and request goroutines immediately, preventing
-	// the session from hanging after SCP completes or the user types exit.
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// done is closed after the downstream channel is fully shut down.
+	done := make(chan struct{})
+
+	// Upstream→downstream goroutine: when upstream closes, first drain
+	// exit-status (upReqWg), then send a full SSH_MSG_CHANNEL_CLOSE to the
+	// downstream client.  Sending CLOSE (not just EOF/CloseWrite) is
+	// required for clients such as rsync that hold their write side open
+	// until they see the server's CLOSE message.
 	go func() {
-		defer wg.Done()
+		io.Copy(downCh, upCh)
+		upReqWg.Wait()
+		downCh.Close()
+		close(done)
+	}()
+
+	// Downstream→upstream goroutine: runs until either the client closes
+	// its write side or downCh.Close() above makes reads return an error.
+	go func() {
 		io.Copy(upCh, downCh)
 		upCh.CloseWrite()
+		upCh.Close()
 	}()
-	go func() {
-		defer wg.Done()
-		io.Copy(downCh, upCh)
-		downCh.CloseWrite()
-	}()
-	wg.Wait()
 
-	// Drain remaining upstream requests (exit-status, exit-signal) so the
-	// client receives the exit code before the channel is torn down.
-	upReqWg.Wait()
-
-	downCh.Close()
-	upCh.Close()
+	<-done
 }
 
 // proxyRequests forwards SSH channel requests according to the given allowlist.
