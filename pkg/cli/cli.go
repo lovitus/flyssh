@@ -95,6 +95,9 @@ type Options struct {
 	ScpUpload     string // --scp-upload '...'
 	ScpDownload   string // --scp-download '...'
 
+	// Local SSH gateway mode
+	SSHGateway string // --ssh-gateway 'user:pass@bind:port'
+
 	// Windows companion GUI and hidden GUI subprocess commands
 	Wingui          bool   // --wingui
 	GuiInternalHome bool   // --gui-internal-home
@@ -321,6 +324,11 @@ func ParseArgs(args []string) (*Options, error) {
 				opts.ScpDownload = args[i]
 			case strings.HasPrefix(arg, "--scp-download="):
 				opts.ScpDownload = arg[len("--scp-download="):]
+			case arg == "--ssh-gateway" && i+1 < len(args):
+				i++
+				opts.SSHGateway = args[i]
+			case strings.HasPrefix(arg, "--ssh-gateway="):
+				opts.SSHGateway = arg[len("--ssh-gateway="):]
 			case arg == "--reconnect-delay" && i+1 < len(args):
 				i++
 				d := 0
@@ -584,6 +592,9 @@ func ParseArgs(args []string) (*Options, error) {
 	if err := validateTransferMode(opts); err != nil {
 		return nil, err
 	}
+	if err := validateGatewayMode(opts); err != nil {
+		return nil, err
+	}
 
 	return opts, nil
 }
@@ -662,6 +673,52 @@ func validateTransferMode(opts *Options) error {
 	}
 	if len(opts.LocalForwards) > 0 || len(opts.RemoteForwards) > 0 || len(opts.DynamicForwards) > 0 {
 		return fmt.Errorf("transfer mode cannot be combined with port forwarding")
+	}
+	return nil
+}
+
+func validateGatewayMode(opts *Options) error {
+	if opts.SSHGateway == "" {
+		return nil
+	}
+	if opts.ForwardAgent {
+		return fmt.Errorf("--ssh-gateway cannot be combined with -A")
+	}
+	if opts.ForwardX11 {
+		return fmt.Errorf("--ssh-gateway cannot be combined with -X")
+	}
+	if opts.ForwardX11Trusted {
+		return fmt.Errorf("--ssh-gateway cannot be combined with -Y")
+	}
+	if opts.NoCommand {
+		return fmt.Errorf("--ssh-gateway cannot be combined with -N")
+	}
+	if opts.ForceTTY {
+		return fmt.Errorf("--ssh-gateway cannot be combined with -t")
+	}
+	if opts.DisableTTY {
+		return fmt.Errorf("--ssh-gateway cannot be combined with -T")
+	}
+	if opts.Subsystem {
+		return fmt.Errorf("--ssh-gateway cannot be combined with -s")
+	}
+	if opts.StdioForward != "" {
+		return fmt.Errorf("--ssh-gateway cannot be combined with -W")
+	}
+	if len(opts.LocalForwards) > 0 || len(opts.RemoteForwards) > 0 || len(opts.DynamicForwards) > 0 {
+		return fmt.Errorf("--ssh-gateway cannot be combined with port forwarding (-L/-R/-D)")
+	}
+	if opts.Wingui {
+		return fmt.Errorf("--ssh-gateway cannot be combined with --wingui")
+	}
+	if opts.HasGUIInternalMode() {
+		return fmt.Errorf("--ssh-gateway cannot be combined with GUI internal flags")
+	}
+	if opts.HasTransferMode() {
+		return fmt.Errorf("--ssh-gateway cannot be combined with transfer flags")
+	}
+	if opts.Command != "" {
+		return fmt.Errorf("--ssh-gateway cannot be combined with a remote command")
 	}
 	return nil
 }

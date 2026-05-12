@@ -1,5 +1,32 @@
 # Changelog / 更新日志
 
+## v1.0.28 (2026-05-12)
+
+### Features / 功能
+
+- **Add `--ssh-gateway` SSH gateway mode** — `--ssh-gateway 'user:pass@bind:port'` starts a local SSH server that proxies third-party SSH/SFTP clients (Xshell, SecureCRT, FileZilla, etc.) through FlySsh's established multi-hop connection. The client authenticates with local credentials; FlySsh handles the full upstream chain transparently. Implemented as a new zero-intrusion `pkg/gateway` package / 新增 `--ssh-gateway` SSH 网关模式：在本地启动一个 SSH 服务，将第三方 SSH/SFTP 客户端（Xshell、SecureCRT、FileZilla 等）通过 FlySsh 已建立的多跳连接透明代理。客户端仅需对本地网关认证，上游链路由 FlySsh 全权处理。以零侵入的新包 `pkg/gateway` 实现。
+
+### Details / 细节
+
+- Session channels: bidirectional data copy with directional request allowlists. `x11-req` and `auth-agent-req@openssh.com` are rejected / 会话通道：双向数据透明复制，按方向维护请求白名单；`x11-req` 和 `auth-agent-req@openssh.com` 明确拒绝。
+- `direct-tcpip` channels use `forwarding.DialTCP` to preserve mux relay / exec fallback; `CloseWrite` properly propagated through `idleConn` / `direct-tcpip` 通道使用 `forwarding.DialTCP`；`CloseWrite` 正确穿透 `idleConn` 包装层。
+- `keepalive@openssh.com` answered locally with `true`; `tcpip-forward` and unknown global requests return `false` / `keepalive@openssh.com` 本地回复 true；`tcpip-forward` 及未知全局请求返回 false。
+- Gateway host key auto-generated (ed25519) and persisted to `os.UserConfigDir()/flyssh/gateway_host_key` (0600) / 网关主机密钥自动生成并持久化，重启不触发客户端密钥变更警告。
+- Upstream disconnect closes listener and all active downstream connections / 上游断连时关闭监听器及所有活跃下游连接。
+- Password auth uses `crypto/subtle.ConstantTimeCompare` / 密码认证使用常量时间比较。
+- `--ssh-gateway` value scrubbed from `argv` at startup / 启动时从 `argv` 清除密码。
+- CLI validates `--ssh-gateway` is mutually exclusive with `-A/-X/-Y/-N/-t/-T/-s/-L/-R/-D/-W/--wingui`/transfer/command/GUI-internal flags / CLI 校验互斥参数。
+
+### Verification / 验证
+
+- `go build ./...`
+- `GOOS=windows GOARCH=amd64 go build ./...`
+- `GOOS=windows GOARCH=arm64 go build ./...`
+- `GOOS=linux GOARCH=amd64 go build ./...`
+- `go test ./...`
+
+---
+
 ## v1.0.27 (2026-05-11)
 
 ### Features / 功能

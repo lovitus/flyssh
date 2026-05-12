@@ -19,6 +19,10 @@ type idleConn struct {
 	done       chan struct{}
 }
 
+type closeWriter interface {
+	CloseWrite() error
+}
+
 func wrapIdleConn(conn net.Conn, timeout time.Duration) net.Conn {
 	if timeout <= 0 {
 		timeout = DefaultIdleTimeout
@@ -56,6 +60,14 @@ func (ic *idleConn) Write(b []byte) (int, error) {
 func (ic *idleConn) Close() error {
 	ic.closeOnce.Do(func() { close(ic.done) })
 	return ic.Conn.Close()
+}
+
+func (ic *idleConn) CloseWrite() error {
+	ic.touch()
+	if cw, ok := ic.Conn.(closeWriter); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 func (ic *idleConn) watchdog() {

@@ -25,6 +25,7 @@ type sessionConn struct {
 
 func (c *sessionConn) Read(b []byte) (int, error)         { return c.stdout.Read(b) }
 func (c *sessionConn) Write(b []byte) (int, error)        { return c.stdin.Write(b) }
+func (c *sessionConn) CloseWrite() error                  { return c.stdin.Close() }
 func (c *sessionConn) Close() error                       { c.stdin.Close(); return c.session.Close() }
 func (c *sessionConn) LocalAddr() net.Addr                { return nil }
 func (c *sessionConn) RemoteAddr() net.Addr               { return nil }

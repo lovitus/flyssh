@@ -18,6 +18,7 @@ import (
 	"github.com/flyssh/flyssh/pkg/cli"
 	"github.com/flyssh/flyssh/pkg/config"
 	"github.com/flyssh/flyssh/pkg/forwarding"
+	"github.com/flyssh/flyssh/pkg/gateway"
 	"github.com/flyssh/flyssh/pkg/session"
 	"github.com/flyssh/flyssh/pkg/socks"
 	"github.com/flyssh/flyssh/pkg/transfer"
@@ -25,7 +26,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "1.0.27"
+var Version = "1.0.28"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
@@ -34,7 +35,7 @@ var Version = "1.0.27"
 func scrubArgs() {
 	sensitive := map[string]bool{
 		"--password": true, "--passwords": true, "--socks-pass": true,
-		"--secondhost": true, "--secondhostpass": true,
+		"--secondhost": true, "--secondhostpass": true, "--ssh-gateway": true,
 	}
 	for i := 0; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -297,6 +298,12 @@ func runOnce(opts *cli.Options) (int, error) {
 
 	if transferSpec != nil {
 		return transfer.Run(finalClient, transferSpec)
+	}
+
+	// SSH gateway mode: proxy third-party clients through to finalClient
+	if opts.SSHGateway != "" {
+		err := gateway.Serve(finalClient, opts.SSHGateway, opts.Verbose)
+		return 255, err // upstream died → triggers reconnect
 	}
 
 	// Start port forwarding (all on finalClient)

@@ -107,6 +107,20 @@ func TestParseArgs_GUIInternalFlags(t *testing.T) {
 	}
 }
 
+func TestParseArgs_SSHGatewayRejectsGUIInternalFlags(t *testing.T) {
+	_, err := ParseArgs([]string{
+		"user@host",
+		"--ssh-gateway", "admin:secret@127.0.0.1:2222",
+		"--gui-internal-home",
+	})
+	if err == nil {
+		t.Fatal("expected --ssh-gateway with GUI internal mode to fail")
+	}
+	if !strings.Contains(err.Error(), "GUI internal") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestPrintUsage_HidesGUIInternalFlags(t *testing.T) {
 	oldStderr := os.Stderr
 	r, w, err := os.Pipe()

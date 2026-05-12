@@ -102,6 +102,7 @@ Live transfer validation notes for the current implementation are recorded in [V
 | SCP upload / 上传 | `--scp-upload '...'` | Built-in SCP upload on current route / 使用当前链路执行内置 SCP 上传 |
 | SCP download / 下载 | `--scp-download '...'` | Built-in SCP download on current route / 使用当前链路执行内置 SCP 下载 |
 | Windows transfer GUI / Windows 图形传输 | `--wingui` | Companion transfer panel for current route / 当前链路的图形传输面板 |
+| SSH Gateway / SSH 网关 | `--ssh-gateway 'user:pass@bind:port'` | Proxy third-party SSH/SFTP clients through current route / 将第三方 SSH/SFTP 客户端通过当前链路代理 |
 | Host key auto-accept / 自动接受指纹 | default | Auto-accept new fingerprints / 自动接受新指纹 |
 
 ---
@@ -268,6 +269,26 @@ flyssh user:pass@host --rsync-download '-avz /srv/site/ ./site-copy/'
 flyssh --socks 127.0.0.1:1080 u1@hop1 u2@hop2 --passwords 'p1,p2' \
   --rsync-upload '-av ./src/ /data/src/'
 ```
+
+### SSH Gateway / SSH 网关
+
+`--ssh-gateway 'user:pass@bind:port'` starts a local SSH server that proxies third-party SSH/SFTP clients (Xshell, SecureCRT, FileZilla, etc.) through FlySsh's established multi-hop connection to the final server. The third-party client authenticates with the local gateway credentials; FlySsh handles everything beyond.
+
+`--ssh-gateway 'user:pass@bind:port'` 启动一个本地 SSH 服务，将第三方 SSH/SFTP 客户端（Xshell、SecureCRT、FileZilla 等）通过 FlySsh 已建立的多跳连接代理到目标服务器。第三方客户端只需对本地网关认证，FlySsh 负责其余所有链路。
+
+```bash
+# Start gateway: third-party clients connect to 127.0.0.1:2222 with admin/mypass
+# 启动网关：第三方客户端用 admin/mypass 连接 127.0.0.1:2222
+flyssh --socks 127.0.0.1:1080 user1@hop1 user2@target --ssh-gateway 'admin:mypass@127.0.0.1:2222'
+
+# Then from any SSH client on the same machine / 同机上任意 SSH 客户端：
+ssh -p 2222 admin@127.0.0.1
+sftp -P 2222 admin@127.0.0.1
+```
+
+The gateway host key is persisted to `os.UserConfigDir()/flyssh/gateway_host_key` so clients do not see a key-changed warning on restart. Supported: shell, exec, pty, SFTP/SCP (subsystem/exec), client local port forward (-L), dynamic forward (-D). Not supported: remote port forward (-R), X11, agent forwarding.
+
+网关主机密钥持久化到 `os.UserConfigDir()/flyssh/gateway_host_key`，重启不会触发客户端的主机密钥变更警告。支持：shell、exec、pty、SFTP/SCP（subsystem/exec）、客户端本地端口转发（-L）、动态转发（-D）。不支持：远程端口转发（-R）、X11、代理转发。
 
 ### Windows companion GUI / Windows 图形传输面板
 
@@ -552,6 +573,7 @@ FlySsh Extensions:
   --wingui                Windows companion transfer GUI / Windows 图形传输面板
   --no-reconnect          Disable auto-reconnect / 禁用自动重连
   --reconnect-delay N     Reconnect delay seconds / 重连延迟秒数
+  --ssh-gateway spec      Local SSH gateway 'user:pass@bind:port' / 本地 SSH 网关
 
   -ltcp://spec[,spec...]  Easy local forward / 简易本地转发
   -rtcp://spec[,spec...]  Easy remote forward / 简易远程转发
@@ -568,10 +590,12 @@ Legacy Two-Hop:
 ## Security Notes / 安全说明
 
 - `--password` on command line may appear in shell history. Use `--password-env` or `--password-file` for better security.
+- `--ssh-gateway` password on command line may appear in shell history. FlySsh scrubs `argv` immediately after start, but the shell records history before the process launches.
 - FlySsh scrubs `argv` at startup to hide passwords from `/proc/self/cmdline` and process listings.
 - Host keys are auto-accepted on first connection and saved to `~/.ssh/known_hosts`. Changed keys are blocked.
 
 - 命令行中的 `--password` 可能出现在 shell 历史记录中。建议使用 `--password-env` 或 `--password-file`。
+- `--ssh-gateway` 的密码同样可能出现在 shell 历史记录中。FlySsh 启动后立即清除 `argv`，但 shell 在进程启动前已记录历史。
 - FlySsh 启动时清除 `argv` 以隐藏密码，防止在进程列表中泄露。
 - 首次连接自动接受主机密钥并保存到 `~/.ssh/known_hosts`，密钥变更时阻止连接。
 
