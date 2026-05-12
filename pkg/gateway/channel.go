@@ -62,9 +62,17 @@ func handleSession(newCh ssh.NewChannel, upstream *ssh.Client, verbose bool) {
 		return
 	}
 
-	var wg sync.WaitGroup
+	// Stderr and request proxy run in the background; closing the channels
+	// (below) will unblock them once data transfer is done.
+	go io.Copy(upCh.Stderr(), downCh.Stderr())
+	go io.Copy(downCh.Stderr(), upCh.Stderr())
+	go proxyRequests(downReqs, upCh, downstreamToUpstream, verbose, "down→up")
+	go proxyRequests(upReqs, downCh, upstreamToDownstream, verbose, "up→down")
 
-	// Bidirectional data copy (stdout).
+	// Wait only for bidirectional stdout to finish, then close both channels.
+	// This unblocks the stderr and request goroutines immediately, preventing
+	// the session from hanging after SCP completes or the user types exit.
+	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -76,33 +84,8 @@ func handleSession(newCh ssh.NewChannel, upstream *ssh.Client, verbose bool) {
 		io.Copy(downCh, upCh)
 		downCh.CloseWrite()
 	}()
-
-	// Bidirectional stderr copy.
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		io.Copy(upCh.Stderr(), downCh.Stderr())
-	}()
-	go func() {
-		defer wg.Done()
-		io.Copy(downCh.Stderr(), upCh.Stderr())
-	}()
-
-	// Proxy requests: downstream → upstream.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		proxyRequests(downReqs, upCh, downstreamToUpstream, verbose, "down→up")
-	}()
-
-	// Proxy requests: upstream → downstream.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		proxyRequests(upReqs, downCh, upstreamToDownstream, verbose, "up→down")
-	}()
-
 	wg.Wait()
+
 	downCh.Close()
 	upCh.Close()
 }
