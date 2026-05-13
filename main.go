@@ -643,6 +643,10 @@ func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.Clie
 		}
 
 		jumpConfig := &ssh.ClientConfig{
+			Config: ssh.Config{
+				Ciphers: sshConfig.Ciphers, // nil = use library defaults
+				MACs:    sshConfig.MACs,
+			},
 			User:            jumpUser,
 			Auth:            jumpAuthMethods,
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
