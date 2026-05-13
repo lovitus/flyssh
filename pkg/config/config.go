@@ -247,13 +247,9 @@ func applyOption(cfg *ResolvedConfig, key, value string) {
 	case "userknownhostsfile":
 		cfg.KnownHostsFile = expandPath(value)
 	case "ciphers":
-		if len(cfg.Ciphers) == 0 {
-			cfg.Ciphers = splitTrimmed(value)
-		}
+		cfg.Ciphers = splitTrimmed(value) // -o always overrides config file
 	case "macs":
-		if len(cfg.MACs) == 0 {
-			cfg.MACs = splitTrimmed(value)
-		}
+		cfg.MACs = splitTrimmed(value) // -o always overrides config file
 	}
 }
 
