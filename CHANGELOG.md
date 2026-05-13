@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## v1.0.32 (2026-05-13)
+
+### Bug Fixes / 修复
+
+- **Fix SSH gateway incompatibility with GUI clients (XShell, PuTTY, etc.)** — the gateway now advertises three host key types: `ssh-ed25519`, `ecdsa-sha2-nistp256`, and `ssh-rsa`. Previously only `ssh-ed25519` was offered; older GUI clients that only accept `ssh-rsa` or ECDSA (e.g. XShell 5/6, PuTTY < 0.68) failed with "no common algorithm for host key". All three keys are persisted under `%APPDATA%/flyssh/` (`gateway_host_key`, `gateway_host_key_ecdsa`, `gateway_host_key_rsa`) so clients don't see a host key change on restart / 修复 SSH 网关与 GUI 客户端（XShell、PuTTY 等）不兼容的问题：网关现在同时提供 ed25519、ecdsa-sha2-nistp256、ssh-rsa 三种 host key，不再因为只提供 ed25519 而被老版本客户端拒绝。
+
+### Verification / 验证
+
+- `go build ./...`
+- `go test ./...`
+- Manual: XShell connects to gateway without "no common algorithm" error
+
+---
+
 ## v1.0.31 (2026-05-12)
 
 ### Bug Fixes / 修复

@@ -20,7 +20,7 @@ func Serve(finalClient *ssh.Client, spec string, verbose bool) error {
 		return fmt.Errorf("gateway: %w", err)
 	}
 
-	hostKey, err := loadOrGenerateHostKey()
+	hostKeys, err := loadOrGenerateHostKeys()
 	if err != nil {
 		return err
 	}
@@ -34,11 +34,11 @@ func Serve(finalClient *ssh.Client, spec string, verbose bool) error {
 		log.Printf("[gateway] Listening on %s (user=%s)", ln.Addr(), user)
 	}
 
-	return serveListener(ln, finalClient, user, password, hostKey, verbose)
+	return serveListener(ln, finalClient, user, password, hostKeys, verbose)
 }
 
 // serveListener is the internal serve loop, separated for testability.
-func serveListener(ln net.Listener, finalClient *ssh.Client, user, password string, hostKey ssh.Signer, verbose bool) error {
+func serveListener(ln net.Listener, finalClient *ssh.Client, user, password string, hostKeys []ssh.Signer, verbose bool) error {
 	expectedUser := []byte(user)
 	expectedPassword := []byte(password)
 	serverConfig := &ssh.ServerConfig{
@@ -51,7 +51,9 @@ func serveListener(ln net.Listener, finalClient *ssh.Client, user, password stri
 			return nil, fmt.Errorf("authentication failed")
 		},
 	}
-	serverConfig.AddHostKey(hostKey)
+	for _, hk := range hostKeys {
+		serverConfig.AddHostKey(hk)
+	}
 
 	// Track active downstream connections for cleanup.
 	var mu sync.Mutex
