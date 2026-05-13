@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## v1.0.34 (2026-05-13)
+
+### Bug Fixes / 修复
+
+- **Fix Ciphers/MACs not applied to ProxyJump hop connections** — `jumpConfig` in `connectViaJumpHost` was missing `ssh.Config`, so `-o Ciphers=...` had no effect when the ProxyJump hop itself is a legacy/embedded SSH server / 修复 ProxyJump 中间跳连接未应用 Ciphers/MACs 配置的问题。
+- **Fix `-o Ciphers`/`-o MACs` unable to override ssh_config file settings** — `applyOption` had a `len()==0` guard copied from `applyEntry`, preventing CLI `-o` from overriding a `Host` block that already set `Ciphers`/`MACs`. Removed the guard; CLI `-o` now correctly takes highest priority (matches OpenSSH semantics) / 修复 `-o Ciphers=...` 无法覆盖 `~/.ssh/config` 中已有 Ciphers 配置的问题，符合 OpenSSH 优先级语义（CLI > 配置文件）。
+
+### Verification / 验证
+
+- `go build ./...`
+- `go test ./...`
+
+---
+
 ## v1.0.33 (2026-05-13)
 
 ### Bug Fixes / 修复
