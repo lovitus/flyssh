@@ -26,7 +26,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "1.0.32"
+var Version = "1.0.33"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
@@ -500,6 +500,10 @@ func connectFirstHost(sshConfig *config.ResolvedConfig, opts *cli.Options) (*ssh
 	}
 
 	clientConfig := &ssh.ClientConfig{
+		Config: ssh.Config{
+			Ciphers: sshConfig.Ciphers, // nil = use library defaults
+			MACs:    sshConfig.MACs,
+		},
 		User:            sshConfig.User,
 		Auth:            authMethods,
 		HostKeyCallback: auth.GetHostKeyCallback(sshConfig, opts),
@@ -587,6 +591,10 @@ func connectHop(prevClient *ssh.Client, hop cli.HopSpec, opts *cli.Options, hopN
 	}
 
 	hopClientConfig := &ssh.ClientConfig{
+		Config: ssh.Config{
+			Ciphers: hopCfg.Ciphers, // nil = use library defaults
+			MACs:    hopCfg.MACs,
+		},
 		User:            hop.User,
 		Auth:            hopAuthMethods,
 		HostKeyCallback: auth.GetHostKeyCallback(hopCfg, opts),

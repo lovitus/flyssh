@@ -200,6 +200,12 @@ func applyEntry(cfg *ResolvedConfig, e *SSHConfigEntry) {
 	if e.KnownHostsFile != "" {
 		cfg.KnownHostsFile = e.KnownHostsFile
 	}
+	if e.Ciphers != "" && len(cfg.Ciphers) == 0 {
+		cfg.Ciphers = splitTrimmed(e.Ciphers)
+	}
+	if e.MACs != "" && len(cfg.MACs) == 0 {
+		cfg.MACs = splitTrimmed(e.MACs)
+	}
 }
 
 func applyOption(cfg *ResolvedConfig, key, value string) {
@@ -240,6 +246,14 @@ func applyOption(cfg *ResolvedConfig, key, value string) {
 		cfg.StrictHostKeyChecking = value
 	case "userknownhostsfile":
 		cfg.KnownHostsFile = expandPath(value)
+	case "ciphers":
+		if len(cfg.Ciphers) == 0 {
+			cfg.Ciphers = splitTrimmed(value)
+		}
+	case "macs":
+		if len(cfg.MACs) == 0 {
+			cfg.MACs = splitTrimmed(value)
+		}
 	}
 }
 
@@ -386,6 +400,18 @@ func expandPath(p string) string {
 		return filepath.Join(userHomeDir(), p[2:])
 	}
 	return p
+}
+
+// splitTrimmed splits a comma-separated string and trims whitespace from each element.
+func splitTrimmed(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func userHomeDir() string {

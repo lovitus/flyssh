@@ -1,5 +1,18 @@
 # Changelog / 更新日志
 
+## v1.0.33 (2026-05-13)
+
+### Bug Fixes / 修复
+
+- **Fix Ciphers/MACs from ssh_config not being applied to SSH connections** — `Ciphers` and `MACs` directives in `~/.ssh/config` (or via `-o Ciphers=...`) were parsed into `ResolvedConfig` but never forwarded to `ssh.ClientConfig`. As a result, users configuring legacy ciphers (e.g. `aes128-cbc`) to reach old Dropbear/embedded SSH servers had no effect. Fix: `applyEntry` and `applyOption` in `pkg/config` now populate `ResolvedConfig.Ciphers`/`MACs`; `connectFirstHost` and `connectHop` in `main.go` now pass them to `ssh.ClientConfig.Config`. When not configured, both fields remain `nil` which preserves the existing behaviour of using Go crypto/ssh library defaults / 修复 ssh_config 里配置的 Ciphers/MACs 字段被解析但未传给 ssh.ClientConfig 的问题。现在可以通过 `-o Ciphers=aes128-cbc` 等配置连接旧版 Dropbear/嵌入式 SSH 服务器。未配置时保持原有默认行为不变。
+
+### Verification / 验证
+
+- `go build ./...`
+- `go test ./...`
+
+---
+
 ## v1.0.32 (2026-05-13)
 
 ### Bug Fixes / 修复
