@@ -123,7 +123,7 @@ Options:
   -a              Disable agent forwarding
   -b bind_addr    Bind address for outgoing connection
   -C              Enable compression
-  -c cipher       Cipher specification
+  -c ciphers      Ciphers, comma-separated
   -D [bind:]port  Dynamic port forwarding (SOCKS5)
   -E log_file     Log to file instead of stderr
   -e char         Escape character (default: ~)
@@ -134,7 +134,7 @@ Options:
   -J destination  ProxyJump
   -L [bind:]port:host:port  Local port forwarding
   -l login_name   Login name
-  -m mac_spec     MAC specification
+  -m macs         MACs, comma-separated
   -N              No remote command (forwarding only)
   -o option       SSH option in key=value format
   -p port         Port (default: 22)
@@ -148,6 +148,8 @@ Options:
   -W host:port    Stdio forwarding
   -X              Enable X11 forwarding
   -Y              Enable trusted X11 forwarding
+  --help          Show this help
+  --version       Show version
 
 SOCKS5 Proxy (flyssh extension):
   --socks host:port     SOCKS5 proxy server
@@ -163,10 +165,10 @@ Multi-hop (chain through unlimited machines):
   flyssh user1:pass1@host1 user2:pass2@host2 user3@host3:2222 [command]
   Each positional arg with @ is a hop. Last hop gets the shell/forwarding.
   Use -- before a remote command if the command contains @ or could look like a hop:
-    flyssh user@host -- "printf '%%s\n' 'a@b'"
+  flyssh user@host -- "printf '%%s\n' 'a@b'"
   --keys "k1,,k3,,,k6,"   Per-hop identity files (comma-separated, empty=skip)
   --passwords "p1,,p3"    Per-hop passwords (comma-separated, empty=skip)
-  --key FILE              Single key applied to ALL hops (if --keys not set)
+  Use -i FILE for a single identity applied to all hops when --keys is not set.
 
   Password escaping (inline or --passwords):
     Backslash:  user:p\@ss\:word@host:22
@@ -200,11 +202,16 @@ File Transfer:
   --scp-download '...'    Run built-in SCP download using current flyssh route
   --wingui                Launch Windows companion transfer GUI
 
+SSH Gateway:
+  --ssh-gateway 'user:pass@bind:port'
+                          Start local SSH gateway for third-party clients
+
 Security Note:
   --password on the command line may be visible in shell history and
   process listings. Use --password-env or --password-file for better
   security. The program will attempt to scrub argv at startup, but
-  shell history cannot be controlled by the program.
+  shell history cannot be controlled by the program. --ssh-gateway
+  includes a local gateway password and has the same shell-history risk.
 `)
 }
 

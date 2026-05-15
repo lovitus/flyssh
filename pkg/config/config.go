@@ -129,6 +129,12 @@ func LoadSSHConfig(opts *cli.Options) *ResolvedConfig {
 	if opts.NoForwardAgent {
 		cfg.ForwardAgent = false
 	}
+	if opts.CipherSpec != "" {
+		cfg.Ciphers = splitTrimmed(opts.CipherSpec)
+	}
+	if opts.MACSpec != "" {
+		cfg.MACs = splitTrimmed(opts.MACSpec)
+	}
 
 	// Apply -o options
 	for k, v := range opts.SSHOptions {

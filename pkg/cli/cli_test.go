@@ -142,6 +142,14 @@ func TestPrintUsage_HidesGUIInternalFlags(t *testing.T) {
 	if !strings.Contains(text, "--wingui") {
 		t.Fatalf("usage does not mention --wingui:\n%s", text)
 	}
+	for _, want := range []string{"--ssh-gateway", "--help", "--version"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("usage does not mention %s:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "--key FILE") {
+		t.Fatalf("usage exposes unsupported --key flag:\n%s", text)
+	}
 }
 
 func TestParseArgs_TransferFlagsMutuallyExclusive(t *testing.T) {

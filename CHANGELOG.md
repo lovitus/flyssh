@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.35 (2026-05-15)
+
+### Bug Fixes / 修复
+
+- **Fix `--help` drift and make `-c`/`-m` effective** — `--help` now documents the supported `--ssh-gateway`, `--help`, and `--version` flags, removes the unsupported `--key FILE` entry, and clarifies that `-c`/`-m` are comma-separated cipher/MAC lists. The `-c` and `-m` flags now populate `ResolvedConfig.Ciphers` / `ResolvedConfig.MACs`, while `-o Ciphers=...` and `-o MACs=...` continue to take highest priority / 修复 `--help` 与实际参数不同步的问题，并让 `-c` / `-m` 真正生效；同时保持 `-o Ciphers=...` / `-o MACs=...` 最高优先级。
+
+### Verification / 验证
+
+- `go test ./pkg/config ./pkg/cli`
+- `go test ./...`
+- `go build ./...`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-1.0.35-windows-amd64.exe .`
+- `git diff --check`
+
+---
+
 ## v1.0.34 (2026-05-13)
 
 ### Bug Fixes / 修复
