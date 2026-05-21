@@ -1769,24 +1769,6 @@ func remoteParent(dir string) string {
 	return path.Dir(dir)
 }
 
-func connectionSummary(opts *cli.Options) string {
-	target := opts.Host
-	if opts.User != "" {
-		target = opts.User + "@" + target
-	}
-	if opts.Port > 0 {
-		target = fmt.Sprintf("%s:%d", target, opts.Port)
-	}
-	parts := []string{target}
-	if len(opts.ExtraHosts) > 0 {
-		parts = append(parts, fmt.Sprintf("%d extra hop(s)", len(opts.ExtraHosts)))
-	}
-	if opts.SocksProxy != "" {
-		parts = append(parts, "SOCKS "+opts.SocksProxy)
-	}
-	return strings.Join(parts, " via ")
-}
-
 func childDescription(args []string) string {
 	for _, arg := range args {
 		switch {

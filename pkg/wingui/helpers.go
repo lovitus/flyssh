@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/flyssh/flyssh/pkg/cli"
 )
 
 const promptNotice = "Running; answer prompts in terminal if shown"
@@ -36,6 +38,79 @@ func buildChildArgs(rawArgs []string, extra ...string) []string {
 		}
 	}
 	return append(args, extra...)
+}
+
+func connectionSummary(opts *cli.Options) string {
+	if opts == nil {
+		return ""
+	}
+
+	route := []string{formatConnectionEndpoint(opts.User, opts.Host, opts.Port > 0, opts.Port)}
+	for _, rawHop := range opts.ExtraHosts {
+		route = append(route, connectionEndpointFromRawHop(rawHop))
+	}
+	if len(opts.ExtraHosts) == 0 && opts.SecondHost != "" {
+		route = append(route, formatConnectionEndpoint(opts.SecondHostUser, opts.SecondHostHostname, opts.SecondHostPort > 0, opts.SecondHostPort))
+	}
+
+	summary := strings.Join(route, " -> ")
+	details := make([]string, 0, 2)
+	if hops := len(route); hops > 1 {
+		details = append(details, fmt.Sprintf("%d hops", hops))
+	}
+	if opts.SocksProxy != "" {
+		details = append(details, "SOCKS "+opts.SocksProxy)
+	}
+	if len(details) > 0 {
+		summary += " (" + strings.Join(details, ", ") + ")"
+	}
+	return summary
+}
+
+func connectionEndpointFromRawHop(rawHop string) string {
+	hop, err := cli.ParseHopSpec(rawHop)
+	if err != nil {
+		return redactConnectionRawHop(rawHop)
+	}
+	return formatConnectionEndpoint(hop.User, hop.Host, rawHopHasExplicitPort(rawHop), hop.Port)
+}
+
+func formatConnectionEndpoint(user, host string, showPort bool, port int) string {
+	endpoint := host
+	if user != "" {
+		endpoint = user + "@" + endpoint
+	}
+	if showPort && port > 0 {
+		endpoint = fmt.Sprintf("%s:%d", endpoint, port)
+	}
+	return endpoint
+}
+
+func rawHopHasExplicitPort(rawHop string) bool {
+	hostPart := rawHop
+	if idx := strings.LastIndex(rawHop, "@"); idx >= 0 {
+		hostPart = rawHop[idx+1:]
+	}
+	if strings.HasPrefix(hostPart, "[") {
+		end := strings.LastIndex(hostPart, "]")
+		return end >= 0 && strings.HasPrefix(hostPart[end+1:], ":")
+	}
+	return strings.Contains(hostPart, ":")
+}
+
+func redactConnectionRawHop(rawHop string) string {
+	if idx := strings.LastIndex(rawHop, "@"); idx >= 0 {
+		userPart := rawHop[:idx]
+		hostPart := rawHop[idx+1:]
+		if colon := strings.Index(userPart, ":"); colon >= 0 {
+			userPart = userPart[:colon]
+		}
+		if userPart != "" {
+			return userPart + "@" + hostPart
+		}
+		return hostPart
+	}
+	return rawHop
 }
 
 func stripChildRuntimeFlag(arg string) (string, bool) {

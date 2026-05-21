@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flyssh/flyssh/pkg/cli"
 )
 
 func TestBuildChildArgsRemovesWinguiAndKeepsRawSecrets(t *testing.T) {
@@ -15,6 +17,56 @@ func TestBuildChildArgsRemovesWinguiAndKeepsRawSecrets(t *testing.T) {
 	want := []string{"--socks", "127.0.0.1:1080", "user@host", "--password", "secret", "--gui-internal-home"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected child args:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestConnectionSummaryShowsFinalHop(t *testing.T) {
+	got := connectionSummary(&cli.Options{
+		User:       "uhome",
+		Host:       "120.76.205.81",
+		Port:       41122,
+		ExtraHosts: []string{`uhome:T^23#Rc09nU3@10.111.37.151:41122`},
+		SocksProxy: "192.168.15.211:7897",
+	})
+	want := "uhome@120.76.205.81:41122 -> uhome@10.111.37.151:41122 (2 hops, SOCKS 192.168.15.211:7897)"
+	if got != want {
+		t.Fatalf("connectionSummary = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "T^23") || strings.Contains(got, "#Rc09") {
+		t.Fatalf("connection summary leaked password: %q", got)
+	}
+}
+
+func TestConnectionSummarySingleHop(t *testing.T) {
+	got := connectionSummary(&cli.Options{
+		User: "root",
+		Host: "example.com",
+		Port: 2222,
+	})
+	want := "root@example.com:2222"
+	if got != want {
+		t.Fatalf("connectionSummary = %q, want %q", got, want)
+	}
+}
+
+func TestConnectionSummaryShowsLegacySecondHost(t *testing.T) {
+	got := connectionSummary(&cli.Options{
+		User:               "jump",
+		Host:               "jump.example.com",
+		SecondHost:         "target:secret@target.internal:2222",
+		SecondHostUser:     "target",
+		SecondHostHostname: "target.internal",
+		SecondHostPort:     2222,
+		SecondHostPassword: "secret",
+		SecondHostPass:     "secret",
+		SecondHostKey:      "/tmp/key",
+	})
+	want := "jump@jump.example.com -> target@target.internal:2222 (2 hops)"
+	if got != want {
+		t.Fatalf("connectionSummary = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "secret") {
+		t.Fatalf("connection summary leaked password: %q", got)
 	}
 }
 

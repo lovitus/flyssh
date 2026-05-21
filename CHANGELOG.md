@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.36 (2026-05-21)
+
+### Bug Fixes / 修复
+
+- **Show the full Windows GUI connection route** — the `--wingui` connection field now shows the actual hop chain, including the final target, legacy `--secondhost` routes, and SOCKS proxy details, while keeping passwords redacted / 修复 Windows GUI 顶部连接摘要只显示首跳的问题；现在会展示完整 hop 链路、最终目标、legacy `--secondhost` 以及 SOCKS 代理信息，并继续隐藏密码。
+
+### Verification / 验证
+
+- `go test ./pkg/wingui`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 go test -c ./pkg/wingui -o /tmp/wingui-connection-summary.test.exe`
+- `GOOS=windows GOARCH=amd64 go build -o /tmp/flyssh-connection-summary.exe .`
+- `git diff --check`
+
+---
+
 ## v1.0.35 (2026-05-15)
 
 ### Bug Fixes / 修复
