@@ -69,6 +69,10 @@ flyssh user1:pass1@hop1 user2:pass2@hop2 user3@hop3:2222
 
 # Port forwarding on last hop / 在最后一跳上端口转发
 flyssh user1:p1@hop1 user2:p2@hop2 -ltcp://:8080/127.0.0.1:80
+
+# Mosh-style terminal over the same route, no remote UDP reachability needed
+# 通过同一条链路运行 mosh 风格终端，不要求远端 UDP 可直连
+flyssh --socks 127.0.0.1:1080 user1@hop1 user2@target --passwords 'p1,p2' --mosh
 ```
 
 ## Validation Report / 验证报告
@@ -103,6 +107,8 @@ Live transfer validation notes for the current implementation are recorded in [V
 | SCP download / 下载 | `--scp-download '...'` | Built-in SCP download on current route / 使用当前链路执行内置 SCP 下载 |
 | Windows transfer GUI / Windows 图形传输 | `--wingui` | Companion transfer panel for current route / 当前链路的图形传输面板 |
 | SSH Gateway / SSH 网关 | `--ssh-gateway 'user:pass@bind:port'` | Proxy third-party SSH/SFTP clients through current route / 将第三方 SSH/SFTP 客户端通过当前链路代理 |
+| Mosh terminal / Mosh 终端 | `--mosh` | Interactive mosh-style terminal over current route / 通过当前链路承载交互式 mosh 风格终端 |
+| Mosh named session / Mosh 固定会话 | `--mosh-session NAME` | Reattach/create persistent remote PTY / 接回或创建持久远端 PTY |
 | Host key auto-accept / 自动接受指纹 | default | Auto-accept new fingerprints / 自动接受新指纹 |
 
 ---
@@ -289,6 +295,37 @@ sftp -P 2222 admin@127.0.0.1
 The gateway host key is persisted to `os.UserConfigDir()/flyssh/gateway_host_key` so clients do not see a key-changed warning on restart. Supported: shell, exec, pty, SFTP/SCP (subsystem/exec), client local port forward (-L), dynamic forward (-D). Not supported: remote port forward (-R), X11, agent forwarding.
 
 网关主机密钥持久化到 `os.UserConfigDir()/flyssh/gateway_host_key`，重启不会触发客户端的主机密钥变更警告。支持：shell、exec、pty、SFTP/SCP（subsystem/exec）、客户端本地端口转发（-L）、动态转发（-D）。不支持：远程端口转发（-R）、X11、代理转发。
+
+### Mosh over FlySSH / 通过 FlySSH 承载 Mosh
+
+`--mosh` starts an interactive mosh-style terminal session over the current FlySsh route. Unlike standard mosh, the final server does not need to expose or receive direct UDP; FlySsh carries mosh datagrams through the existing SSH/SOCKS/multi-hop chain and the embedded relay helper.
+
+`--mosh` 会通过当前 FlySsh 链路启动一个交互式 mosh 风格终端。与标准 mosh 不同，最终服务器不需要开放或接收直连 UDP；FlySsh 会把 mosh datagram 封装进现有 SSH/SOCKS/多跳链路和内嵌 relay helper。
+
+```bash
+# Single host / 单跳
+flyssh user:pass@host --mosh
+
+# SOCKS + multi-hop / SOCKS + 多跳
+flyssh --socks 127.0.0.1:1080 user1@hop user2@target \
+  --passwords 'hopPass,targetPass' --mosh
+
+# Named session: later runs with the same name can take over the same remote PTY
+# 固定会话：之后用同名 session 可接回同一个远端 PTY
+flyssh user:pass@host --mosh --mosh-session work
+```
+
+Use `--mosh-session NAME` only when you want cross-process reattach. Names must be 1-64 characters and may contain only letters, digits, `.`, `_`, and `-`. Without it, FlySsh uses a random session name, which is best for one-off sessions and same-process reconnect.
+
+只有需要跨进程接回时才使用 `--mosh-session NAME`。名称长度 1-64，只允许字母、数字、`.`、`_`、`-`。不指定时 FlySsh 使用随机会话名，适合一次性会话和同进程断线重连。
+
+Mosh mode is terminal-only. It cannot be combined with remote commands, SCP/rsync transfer flags, `--wingui`, `--ssh-gateway`, `-L/-R/-D`, `-N`, `-W`, `-s`, `-t/-T`, `-A`, `-X`, or `-Y`.
+
+Mosh 模式只用于交互式终端，不能与远程命令、SCP/rsync 传输参数、`--wingui`、`--ssh-gateway`、`-L/-R/-D`、`-N`、`-W`、`-s`、`-t/-T`、`-A`、`-X`、`-Y` 混用。
+
+More details, including differences from standard mosh and implementation notes, are in [docs/MOSH.md](./docs/MOSH.md).
+
+更多设计差异、未实现范围和实现细节见 [docs/MOSH.md](./docs/MOSH.md)。
 
 ### Windows companion GUI / Windows 图形传输面板
 
@@ -574,6 +611,8 @@ FlySsh Extensions:
   --no-reconnect          Disable auto-reconnect / 禁用自动重连
   --reconnect-delay N     Reconnect delay seconds / 重连延迟秒数
   --ssh-gateway spec      Local SSH gateway 'user:pass@bind:port' / 本地 SSH 网关
+  --mosh                  Built-in mosh-over-FlySSH terminal / 内置 mosh-over-FlySSH 终端
+  --mosh-session NAME     Reattach/create named mosh session / 接回或创建固定 mosh 会话
 
   -ltcp://spec[,spec...]  Easy local forward / 简易本地转发
   -rtcp://spec[,spec...]  Easy remote forward / 简易远程转发
@@ -591,11 +630,13 @@ Legacy Two-Hop:
 
 - `--password` on command line may appear in shell history. Use `--password-env` or `--password-file` for better security.
 - `--ssh-gateway` password on command line may appear in shell history. FlySsh scrubs `argv` immediately after start, but the shell records history before the process launches.
+- `--mosh-session` names are not passwords, but they identify reusable remote sessions. Choose non-sensitive names and avoid sharing them on multi-user systems.
 - FlySsh scrubs `argv` at startup to hide passwords from `/proc/self/cmdline` and process listings.
 - Host keys are auto-accepted on first connection and saved to `~/.ssh/known_hosts`. Changed keys are blocked.
 
 - 命令行中的 `--password` 可能出现在 shell 历史记录中。建议使用 `--password-env` 或 `--password-file`。
 - `--ssh-gateway` 的密码同样可能出现在 shell 历史记录中。FlySsh 启动后立即清除 `argv`，但 shell 在进程启动前已记录历史。
+- `--mosh-session` 名称不是密码，但它会标识可复用的远端会话。建议使用不敏感名称，且不要在多用户系统上随意共享。
 - FlySsh 启动时清除 `argv` 以隐藏密码，防止在进程列表中泄露。
 - 首次连接自动接受主机密钥并保存到 `~/.ssh/known_hosts`，密钥变更时阻止连接。
 

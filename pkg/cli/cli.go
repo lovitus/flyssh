@@ -213,6 +213,8 @@ SSH Gateway:
 Mosh:
   --mosh                  Start built-in mosh-over-FlySSH terminal session
   --mosh-session NAME     Reattach/create a fixed mosh session name
+                          NAME: [A-Za-z0-9._-], max 64 chars
+                          Carries mosh datagrams through current SOCKS/multi-hop route
 
 Security Note:
   --password on the command line may be visible in shell history and
