@@ -9,11 +9,14 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/flyssh/flyssh/pkg/forwarding"
 	"github.com/flyssh/flyssh/pkg/moshframe"
 	"golang.org/x/crypto/ssh"
 )
+
+const attachHandshakeTimeout = 10 * time.Second
 
 type StartInfo struct {
 	Session       string `json:"session_id"`
@@ -89,7 +92,7 @@ func AttachRemote(client *ssh.Client, sessionName string, takeoverToken string, 
 		return nil, err
 	}
 	br := bufio.NewReaderSize(stdout, 4096)
-	if err := consumeAttachOK(br); err != nil {
+	if err := consumeAttachOKWithTimeout(br, attachHandshakeTimeout); err != nil {
 		_ = sess.Close()
 		return nil, err
 	}
@@ -140,6 +143,19 @@ func consumeAttachOK(r *bufio.Reader) error {
 		return fmt.Errorf("attach rejected: %s", strings.TrimSpace(line))
 	}
 	return nil
+}
+
+func consumeAttachOKWithTimeout(r *bufio.Reader, timeout time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- consumeAttachOK(r)
+	}()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("attach handshake timed out after %s", timeout)
+	}
 }
 
 func (a *Attach) Wait() error {

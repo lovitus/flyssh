@@ -381,6 +381,9 @@ func moshAttach(session, takeoverToken string) error {
 	if strings.TrimSpace(line) != "OK" {
 		return fmt.Errorf("attach rejected: %s", strings.TrimSpace(line))
 	}
+	if _, err := os.Stdout.Write([]byte("OK\n")); err != nil {
+		return err
+	}
 
 	errCh := make(chan error, 2)
 	go func() {

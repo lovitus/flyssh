@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.38 (2026-05-23)
+
+### Bug Fixes / 修复
+
+- **Fix `--mosh` attach handshake hang** — remote relay `-mosh-attach` now forwards the daemon `OK` handshake line back to the local FlySSH process before switching to framed datagrams. This fixes sessions that stopped after printing `flyssh: mosh session ... pid=...` / 修复 `--mosh` 在打印远端 session 和 pid 后卡住的问题；远端 relay 现在会先把 daemon 的 `OK` 握手行转发给本地 FlySSH，再进入 datagram 帧转发。
+- **Add attach handshake timeout** — local attach setup now fails clearly after 10 seconds if the remote helper never returns the `OK` line, instead of waiting forever / 本地 attach 等待 `OK` 增加 10 秒超时，远端 helper 异常时不再无限等待。
+
+### Verification / 验证
+
+- `go test ./cmd/relay ./pkg/moshsession`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-1.0.38-windows-amd64.exe .`
+- `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-relay-mosh-fix-linux-amd64 ./cmd/relay`
+
+---
+
 ## v1.0.37 (2026-05-23)
 
 ### Features / 新功能
@@ -10,7 +26,7 @@
 
 ### Hardening / 加固
 
-- **Use the FlySSH-maintained `mosh-go` fork** — depend on `github.com/lovitus/mosh-go v0.5.2-flyssh.4`, which adds authenticated receive semantics, fragment accounting fixes, injected packet connections, and staged takeover (`PrepareTakeover` / `CommitTakeover`) so failed reattach attempts do not invalidate the previous client before attach succeeds / 使用 FlySSH 维护的 `mosh-go` fork，包含认证语义、分片 accounting、注入 packet conn 和两阶段 takeover 修复。
+- **Use the FlySSH-maintained `mosh-go` fork** — depend on `github.com/lovitus/mosh-go v0.5.2-flyssh.5`, which adds authenticated receive semantics, fragment accounting fixes, injected packet connections, and staged takeover (`PrepareTakeover` / `CommitTakeover`) so failed reattach attempts do not invalidate the previous client before attach succeeds / 使用 FlySSH 维护的 `mosh-go` fork，包含认证语义、分片 accounting、注入 packet conn 和两阶段 takeover 修复。
 - **Keep SSH prompts out of raw terminal mode** — initial mosh start and attach now complete before switching stdin to raw mode, so password, host key, passphrase, and MFA prompts continue to run in the normal terminal / 首次 mosh start 和 attach 完成后才进入 raw mode，避免 SSH 交互提示在 raw terminal 下运行。
 
 ### Verification / 验证

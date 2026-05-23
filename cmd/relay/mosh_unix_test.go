@@ -4,6 +4,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -151,6 +153,91 @@ func TestCallMoshControlDoesNotClassifyControlErrorAsStale(t *testing.T) {
 		t.Fatalf("error = %v, want control error", err)
 	}
 	<-done
+}
+
+func TestMoshAttachForwardsOKToStdout(t *testing.T) {
+	session := fmt.Sprintf("attach-ok-%d", time.Now().UnixNano())
+	paths, err := moshSessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureMoshRoot(paths.root); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(paths.socket)
+	defer os.Remove(paths.socket)
+
+	ln, err := net.Listen("unix", paths.socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	reqCh := make(chan moshControlRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req moshControlRequest
+		if err := json.NewDecoder(conn).Decode(&req); err == nil {
+			reqCh <- req
+		}
+		_, _ = conn.Write([]byte("OK\n"))
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	oldStdin := os.Stdin
+	oldStdout := os.Stdout
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = stdinR
+	os.Stdout = stdoutW
+	defer func() {
+		os.Stdin = oldStdin
+		os.Stdout = oldStdout
+		_ = stdinR.Close()
+		_ = stdoutR.Close()
+	}()
+	_ = stdinW.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- moshAttach(session, "")
+		_ = stdoutW.Close()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("moshAttach returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("moshAttach did not return")
+	}
+
+	out, err := io.ReadAll(stdoutR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "OK\n" {
+		t.Fatalf("stdout = %q, want OK newline", out)
+	}
+	select {
+	case req := <-reqCh:
+		if req.Op != "attach" {
+			t.Fatalf("request op = %q, want attach", req.Op)
+		}
+	default:
+		t.Fatal("server did not receive attach request")
+	}
 }
 
 func TestPrepareTakeoverDefersCommitUntilTokenAttach(t *testing.T) {
