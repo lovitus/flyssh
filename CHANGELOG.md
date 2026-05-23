@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## v1.0.41 (2026-05-23)
+
+### Bug Fixes / 修复
+
+- **Fix full-screen keyboard handling in Windows `--mosh` sessions** — Windows mosh sessions now explicitly enable virtual-terminal input on stdin after entering raw mode, so `vi`/`vim`/`less` and similar full-screen programs receive Esc, arrow keys, and other control sequences correctly. Terminal mode is restored on exit / 修复 Windows `--mosh` 会话中 `vi`/`vim` 等全屏程序按键控制异常的问题；进入 raw mode 后显式启用 stdin 的 VT input，并在退出时恢复终端模式。
+
+### Verification / 验证
+
+- `go test ./pkg/moshsession`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-mosh-vt-input.exe .`
+
+---
+
 ## v1.0.40 (2026-05-23)
 
 ### Bug Fixes / 修复

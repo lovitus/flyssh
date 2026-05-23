@@ -82,13 +82,18 @@ func Run(ctx context.Context, connector Connector, opts Options) error {
 	attachCleanup := cleanup
 
 	var oldState *term.State
+	restoreVTInput := func() {}
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		oldState, err = term.MakeRaw(int(os.Stdin.Fd()))
 		if err != nil && opts.Verbose {
 			fmt.Fprintf(os.Stderr, "flyssh: warning: could not set raw terminal: %v\n", err)
 		}
+		if err == nil {
+			restoreVTInput = enableVTInput()
+		}
 	}
 	defer func() {
+		restoreVTInput()
 		if oldState != nil {
 			_ = term.Restore(int(os.Stdin.Fd()), oldState)
 		}
