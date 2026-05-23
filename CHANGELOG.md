@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.40 (2026-05-23)
+
+### Bug Fixes / 修复
+
+- **Fix stale fragments around prompts and full-screen programs in `--mosh`** — update the FlySSH-maintained `mosh-go` fork to `v0.5.2-flyssh.7`. Incremental framebuffer diffs now redraw changed rows from column 1 and clear blank suffixes, preventing stale text from remaining before or after prompts. The diff also synchronizes alternate screen transitions (`ESC[?1049h/l`) so programs like `top`, `vim`, and `less` do not leave their old screen in the normal PowerShell buffer / 修复 `--mosh` 在 PowerShell 中提示符前后、以及 `top`/`vim`/`less` 等全屏程序退出后残留旧画面的问题。
+
+### Verification / 验证
+
+- `go test ./...` in `github.com/lovitus/mosh-go`
+- `go test ./cmd/relay ./pkg/moshsession`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-1.0.40-windows-amd64.exe .`
+- `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-relay-mosh-screen-linux-amd64 ./cmd/relay`
+
+---
+
 ## v1.0.39 (2026-05-23)
 
 ### Bug Fixes / 修复
