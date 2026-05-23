@@ -24,6 +24,8 @@ github.com/lovitus/mosh-go v0.5.2-flyssh.3 h1:vBy9dTiWwPrVFJ8ZO1yFvMIslIMEgD7eDe
 github.com/lovitus/mosh-go v0.5.2-flyssh.3/go.mod h1:hNL+Hjr5z8s4Z4trskxeDQ9JinlCVoBYiH/0jEDJQVM=
 github.com/lovitus/mosh-go v0.5.2-flyssh.4 h1:at3L+Ork/7nbFxUnv8ntjPuDz2ioVcD1/0IZeBaVJTA=
 github.com/lovitus/mosh-go v0.5.2-flyssh.4/go.mod h1:hNL+Hjr5z8s4Z4trskxeDQ9JinlCVoBYiH/0jEDJQVM=
+github.com/lovitus/mosh-go v0.5.2-flyssh.5 h1:x0UPdGJj80QTOINK9DOrhP04HM9noXy4lVtHy4nbBcY=
+github.com/lovitus/mosh-go v0.5.2-flyssh.5/go.mod h1:hNL+Hjr5z8s4Z4trskxeDQ9JinlCVoBYiH/0jEDJQVM=
 github.com/lucasb-eyer/go-colorful v1.3.0 h1:2/yBRLdWBZKrf7gB40FoiKfAWYQ0lqNcbuQwVHXptag=
 github.com/lucasb-eyer/go-colorful v1.3.0/go.mod h1:R4dSotOR9KMtayYi1e77YzuveK+i7ruzyGqttikkLy0=
 github.com/lxn/walk v0.0.0-20210112085537-c389da54e794 h1:NVRJ0Uy0SOFcXSKLsS65OmI1sgCCfiDUPj+cwnH7GZw=
