@@ -3,11 +3,14 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -238,6 +241,109 @@ func TestMoshAttachForwardsOKToStdout(t *testing.T) {
 	default:
 		t.Fatal("server did not receive attach request")
 	}
+}
+
+func TestMoshAttachSubprocessForwardsOKToStdout(t *testing.T) {
+	session := fmt.Sprintf("a%x", time.Now().UnixNano())
+	paths, err := moshSessionPaths(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureMoshRoot(paths.root); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(paths.socket)
+	defer os.Remove(paths.socket)
+
+	ln, err := net.Listen("unix", paths.socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	reqCh := make(chan moshControlRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req moshControlRequest
+		if err := json.NewDecoder(conn).Decode(&req); err == nil {
+			reqCh <- req
+		}
+		_, _ = conn.Write([]byte("OK\n"))
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestRelayMoshAttachHelperProcess", "--", "-mosh-attach", session)
+	cmd.Env = append(os.Environ(), "FLYSSH_RELAY_TEST_HELPER=1")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = stdin.Close()
+
+	lineCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		if err != nil {
+			errCh <- err
+			return
+		}
+		lineCh <- line
+	}()
+
+	select {
+	case line := <-lineCh:
+		if line != "OK\n" {
+			t.Fatalf("stdout line = %q, want OK newline", line)
+		}
+	case err := <-errCh:
+		t.Fatalf("read stdout: %v; stderr=%s", err, stderr.String())
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for attach OK; stderr=%s", stderr.String())
+	}
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("helper exited with %v; stderr=%s", err, stderr.String())
+	}
+	select {
+	case req := <-reqCh:
+		if req.Op != "attach" {
+			t.Fatalf("request op = %q, want attach", req.Op)
+		}
+	default:
+		t.Fatal("server did not receive attach request")
+	}
+}
+
+func TestRelayMoshAttachHelperProcess(t *testing.T) {
+	if os.Getenv("FLYSSH_RELAY_TEST_HELPER") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) != 3 || args[1] != "-mosh-attach" {
+		fmt.Fprintf(os.Stderr, "bad helper args: %v\n", os.Args)
+		os.Exit(2)
+	}
+	runMoshAttach(args[2], "")
+	os.Exit(0)
 }
 
 func TestPrepareTakeoverDefersCommitUntilTokenAttach(t *testing.T) {
