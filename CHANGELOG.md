@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## v1.0.43 (2026-05-23)
+
+### Bug Fixes / 修复
+
+- **Forward terminal input modes in `--mosh` sessions** — update the FlySSH-maintained `mosh-go` fork to `v0.5.2-flyssh.9`. The server now tracks and forwards application cursor-key mode (`ESC[?1h/l`) and application keypad mode (`ESC=` / `ESC>`) through framebuffer diffs, keeping the local terminal input mode aligned with full-screen programs such as `vi`/`vim` / `--mosh` 现在会同步全屏程序设置的 application cursor/keypad 模式，避免本地终端和远端程序的方向键/小键盘模式不一致。
+
+### Verification / 验证
+
+- `go test ./...` in `github.com/lovitus/mosh-go`
+- `go test ./cmd/relay ./pkg/moshsession`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-1.0.43-windows-amd64.exe .`
+
+---
+
 ## v1.0.42 (2026-05-23)
 
 ### Bug Fixes / 修复
