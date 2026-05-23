@@ -121,6 +121,58 @@ func TestParseArgs_SSHGatewayRejectsGUIInternalFlags(t *testing.T) {
 	}
 }
 
+func TestParseArgs_MoshFlag(t *testing.T) {
+	opts, err := ParseArgs([]string{"user@host", "--mosh", "--mosh-session", "work_1"})
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if !opts.Mosh || opts.MoshSession != "work_1" {
+		t.Fatalf("unexpected mosh options: %+v", opts)
+	}
+}
+
+func TestParseArgs_MoshRejectsConflicts(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"command", []string{"user@host", "--mosh", "uname"}, "remote command"},
+		{"transfer", []string{"user@host", "--mosh", "--scp-upload", "a b"}, "transfer flags"},
+		{"wingui", []string{"user@host", "--mosh", "--wingui"}, "--wingui"},
+		{"gateway", []string{"user@host", "--mosh", "--ssh-gateway", "u:p@127.0.0.1:2222"}, "--ssh-gateway"},
+		{"forward", []string{"user@host", "--mosh", "-L", "8080:127.0.0.1:80"}, "port forwarding"},
+		{"agent", []string{"user@host", "--mosh", "-A"}, "-A"},
+		{"x11", []string{"user@host", "--mosh", "-X"}, "-X"},
+		{"subsystem", []string{"user@host", "--mosh", "-s"}, "-s"},
+		{"tty", []string{"user@host", "--mosh", "-T"}, "-T"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseArgs(tt.args)
+			if err == nil {
+				t.Fatal("expected conflict error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateMoshSessionName(t *testing.T) {
+	for _, name := range []string{"work", "a.b_c-1", "-dash"} {
+		if err := ValidateMoshSessionName(name); err != nil {
+			t.Fatalf("%q should be valid: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", ".", "..", "a/b", "a\\b", "~", "a b", "中文"} {
+		if err := ValidateMoshSessionName(name); err == nil {
+			t.Fatalf("%q should be invalid", name)
+		}
+	}
+}
+
 func TestPrintUsage_HidesGUIInternalFlags(t *testing.T) {
 	oldStderr := os.Stderr
 	r, w, err := os.Pipe()
@@ -142,7 +194,7 @@ func TestPrintUsage_HidesGUIInternalFlags(t *testing.T) {
 	if !strings.Contains(text, "--wingui") {
 		t.Fatalf("usage does not mention --wingui:\n%s", text)
 	}
-	for _, want := range []string{"--ssh-gateway", "--help", "--version"} {
+	for _, want := range []string{"--ssh-gateway", "--mosh", "--mosh-session", "--help", "--version"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("usage does not mention %s:\n%s", want, text)
 		}

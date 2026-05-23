@@ -26,7 +26,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "1.0.36"
+var Version = "1.0.37"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
@@ -223,6 +223,14 @@ func main() {
 	if opts.Host == "" {
 		cli.PrintUsage()
 		os.Exit(255)
+	}
+
+	if opts.Mosh {
+		exitCode, err := runMosh(opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
+		}
+		os.Exit(exitCode)
 	}
 
 	reconnectDelay := time.Duration(opts.ReconnectDelay) * time.Second

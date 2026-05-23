@@ -1,5 +1,29 @@
 # Changelog / 更新日志
 
+## v1.0.37 (2026-05-23)
+
+### Features / 新功能
+
+- **Add built-in `--mosh` over FlySSH** — `flyssh ... --mosh` now starts an embedded mosh-style terminal session whose datagrams are carried through the existing FlySSH SSH chain, SOCKS proxy, authentication, and relay helper path. This allows interactive terminal recovery without requiring direct UDP reachability to the final server / 新增内置 `--mosh` 模式：mosh datagram 通过 FlySSH 现有 SSH 多跳、SOCKS、认证和 relay helper 通道承载，不要求最终服务器 UDP 可直连。
+- **Add persistent named mosh sessions** — `--mosh-session NAME` can reattach to an existing remote session by taking over the server association with a fresh key while keeping the remote PTY/shell alive. Same-process reconnects reuse the existing local mosh client state without takeover / 新增 `--mosh-session NAME` 固定会话：可用新 key 接管已有远端会话，同时保留远端 PTY/shell；同进程自动重连则复用本地 mosh client 状态。
+- **Extend the embedded relay for mosh** — relay now supports internal `-mosh-start`, `-mosh-attach`, and `-mosh-daemon` commands on Linux, Darwin, and FreeBSD targets, with daemonized stdio isolation, 0700 runtime directories, session metadata, length-prefixed datagram framing, and bounded queues / 扩展内嵌 relay 支持 mosh 内部命令，并加入 daemon 脱离控制终端、运行目录权限、会话元数据、定长帧协议和有界队列。
+
+### Hardening / 加固
+
+- **Use the FlySSH-maintained `mosh-go` fork** — depend on `github.com/lovitus/mosh-go v0.5.2-flyssh.4`, which adds authenticated receive semantics, fragment accounting fixes, injected packet connections, and staged takeover (`PrepareTakeover` / `CommitTakeover`) so failed reattach attempts do not invalidate the previous client before attach succeeds / 使用 FlySSH 维护的 `mosh-go` fork，包含认证语义、分片 accounting、注入 packet conn 和两阶段 takeover 修复。
+- **Keep SSH prompts out of raw terminal mode** — initial mosh start and attach now complete before switching stdin to raw mode, so password, host key, passphrase, and MFA prompts continue to run in the normal terminal / 首次 mosh start 和 attach 完成后才进入 raw mode，避免 SSH 交互提示在 raw terminal 下运行。
+
+### Verification / 验证
+
+- `go test ./cmd/relay ./pkg/moshsession`
+- `go test ./...`
+- `go test -race ./cmd/relay ./pkg/moshsession`
+- `go test -race ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-mosh-fix-windows-amd64.exe .`
+- `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-relay-mosh-fix-linux-amd64 ./cmd/relay`
+
+---
+
 ## v1.0.36 (2026-05-21)
 
 ### Bug Fixes / 修复

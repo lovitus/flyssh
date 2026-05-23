@@ -2,6 +2,7 @@
 dist/
 *.exe
 flyssh
+/relay
 
 # Relay binaries (rebuilt by build.ps1)
 pkg/forwarding/relaybin/

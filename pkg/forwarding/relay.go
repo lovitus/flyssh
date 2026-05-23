@@ -24,6 +24,12 @@ var (
 	archBinHash  = make(map[string]string) // "linux-amd64" -> sha256 hex prefix
 )
 
+// EnsureRelay uploads or reuses the embedded relay binary for the SSH client
+// and returns its remote path.
+func EnsureRelay(client *ssh.Client, verbose bool) (string, error) {
+	return getOrUploadRelay(client, getClientState(client), verbose)
+}
+
 // getOrUploadRelay detects the remote arch, uploads the embedded relay binary
 // if needed, and returns the remote path. Uses per-client state (cs) so each
 // hop in a multi-hop chain gets independent tracking.

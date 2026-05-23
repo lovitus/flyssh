@@ -10,6 +10,23 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "-mosh-start" {
+		runMoshStart(os.Args[2])
+		return
+	}
+	if (len(os.Args) == 3 || len(os.Args) == 4) && os.Args[1] == "-mosh-attach" {
+		token := ""
+		if len(os.Args) == 4 {
+			token = os.Args[3]
+		}
+		runMoshAttach(os.Args[2], token)
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == "-mosh-daemon" {
+		runMoshDaemon(os.Args[2])
+		return
+	}
+
 	if len(os.Args) == 2 && os.Args[1] == "-mux" {
 		runMux()
 		return

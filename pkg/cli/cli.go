@@ -98,6 +98,10 @@ type Options struct {
 	// Local SSH gateway mode
 	SSHGateway string // --ssh-gateway 'user:pass@bind:port'
 
+	// Built-in mosh-over-FlySSH mode
+	Mosh        bool   // --mosh
+	MoshSession string // --mosh-session NAME
+
 	// Windows companion GUI and hidden GUI subprocess commands
 	Wingui          bool   // --wingui
 	GuiInternalHome bool   // --gui-internal-home
@@ -205,6 +209,10 @@ File Transfer:
 SSH Gateway:
   --ssh-gateway 'user:pass@bind:port'
                           Start local SSH gateway for third-party clients
+
+Mosh:
+  --mosh                  Start built-in mosh-over-FlySSH terminal session
+  --mosh-session NAME     Reattach/create a fixed mosh session name
 
 Security Note:
   --password on the command line may be visible in shell history and
@@ -336,6 +344,13 @@ func ParseArgs(args []string) (*Options, error) {
 				opts.SSHGateway = args[i]
 			case strings.HasPrefix(arg, "--ssh-gateway="):
 				opts.SSHGateway = arg[len("--ssh-gateway="):]
+			case arg == "--mosh":
+				opts.Mosh = true
+			case arg == "--mosh-session" && i+1 < len(args):
+				i++
+				opts.MoshSession = args[i]
+			case strings.HasPrefix(arg, "--mosh-session="):
+				opts.MoshSession = arg[len("--mosh-session="):]
 			case arg == "--reconnect-delay" && i+1 < len(args):
 				i++
 				d := 0
@@ -602,6 +617,9 @@ func ParseArgs(args []string) (*Options, error) {
 	if err := validateGatewayMode(opts); err != nil {
 		return nil, err
 	}
+	if err := validateMoshMode(opts); err != nil {
+		return nil, err
+	}
 
 	return opts, nil
 }
@@ -726,6 +744,82 @@ func validateGatewayMode(opts *Options) error {
 	}
 	if opts.Command != "" {
 		return fmt.Errorf("--ssh-gateway cannot be combined with a remote command")
+	}
+	return nil
+}
+
+func validateMoshMode(opts *Options) error {
+	if opts.MoshSession != "" && !opts.Mosh {
+		return fmt.Errorf("--mosh-session requires --mosh")
+	}
+	if !opts.Mosh {
+		return nil
+	}
+	if opts.MoshSession != "" {
+		if err := ValidateMoshSessionName(opts.MoshSession); err != nil {
+			return err
+		}
+	}
+	if opts.ForwardAgent {
+		return fmt.Errorf("--mosh cannot be combined with -A")
+	}
+	if opts.ForwardX11 {
+		return fmt.Errorf("--mosh cannot be combined with -X")
+	}
+	if opts.ForwardX11Trusted {
+		return fmt.Errorf("--mosh cannot be combined with -Y")
+	}
+	if opts.NoCommand {
+		return fmt.Errorf("--mosh cannot be combined with -N")
+	}
+	if opts.ForceTTY {
+		return fmt.Errorf("--mosh cannot be combined with -t")
+	}
+	if opts.DisableTTY {
+		return fmt.Errorf("--mosh cannot be combined with -T")
+	}
+	if opts.Subsystem {
+		return fmt.Errorf("--mosh cannot be combined with -s")
+	}
+	if opts.StdioForward != "" {
+		return fmt.Errorf("--mosh cannot be combined with -W")
+	}
+	if len(opts.LocalForwards) > 0 || len(opts.RemoteForwards) > 0 || len(opts.DynamicForwards) > 0 {
+		return fmt.Errorf("--mosh cannot be combined with port forwarding (-L/-R/-D)")
+	}
+	if opts.Wingui {
+		return fmt.Errorf("--mosh cannot be combined with --wingui")
+	}
+	if opts.HasGUIInternalMode() {
+		return fmt.Errorf("--mosh cannot be combined with GUI internal flags")
+	}
+	if opts.HasTransferMode() {
+		return fmt.Errorf("--mosh cannot be combined with transfer flags")
+	}
+	if opts.SSHGateway != "" {
+		return fmt.Errorf("--mosh cannot be combined with --ssh-gateway")
+	}
+	if opts.Command != "" {
+		return fmt.Errorf("--mosh cannot be combined with a remote command")
+	}
+	return nil
+}
+
+func ValidateMoshSessionName(name string) error {
+	if name == "" {
+		return fmt.Errorf("--mosh-session requires a name")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("--mosh-session name is too long")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("invalid --mosh-session name %q", name)
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return fmt.Errorf("invalid --mosh-session name %q", name)
 	}
 	return nil
 }
