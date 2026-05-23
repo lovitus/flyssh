@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v1.0.39 (2026-05-23)
+
+### Bug Fixes / 修复
+
+- **Reduce stale screen residue in Windows PowerShell `--mosh` sessions** — update the FlySSH-maintained `mosh-go` fork to `v0.5.2-flyssh.6`, whose framebuffer diff now emits `ESC[K` when a changed row's suffix is blank. This clears old line tails during partial screen refreshes instead of relying only on overwriting spaces / 减少 Windows PowerShell 下 `--mosh` 局部刷新后旧内容残留的问题；`mosh-go` framebuffer diff 在行尾为空时会发送清行序列。
+
+### Verification / 验证
+
+- `go test ./...` in `github.com/lovitus/mosh-go`
+- `go test ./cmd/relay ./pkg/moshsession`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-1.0.39-windows-amd64.exe .`
+- `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-relay-mosh-display-linux-amd64 ./cmd/relay`
+
+---
+
 ## v1.0.38 (2026-05-23)
 
 ### Bug Fixes / 修复
