@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## v2.0.0 (2026-05-23)
+
+### Major Release / 大版本发布
+
+- **Celebrate built-in `--mosh` support** — this major release marks FlySSH's new mosh-over-FlySSH terminal mode as the headline capability. `flyssh ... --mosh` carries mosh datagrams through the existing SSH/SOCKS/multi-hop route, so interactive terminal sessions can recover without requiring direct UDP reachability to the final server / 庆祝内置 `--mosh` 支持：FlySSH 现在可以把 mosh datagram 封装进现有 SSH/SOCKS/多跳链路，在最终服务器无法 UDP 直连时仍能提供可恢复的交互式终端体验。
+- **Document persistent named mosh sessions** — `--mosh-session NAME` is documented for cross-process takeover of the same remote PTY/shell with a fresh key, while normal same-process reconnect keeps the local mosh client state alive / 完善固定 mosh 会话文档：`--mosh-session NAME` 可跨进程接回同一个远端 PTY/shell，同进程断线则保留本地 mosh client 状态并重建 attach 通道。
+- **Document implementation boundaries and differences from standard mosh** — README and `docs/MOSH.md` now describe usage, parameters, relay/daemon internals, the FlySSH-maintained `mosh-go` fork, unsupported scope, and operational notes / README 与 `docs/MOSH.md` 已补充用法、参数、relay/daemon 实现、`mosh-go` fork、未实现范围以及与标准 mosh 的差异。
+
+### Verification / 验证
+
+- `git diff --check`
+- `go test ./pkg/cli ./pkg/moshsession ./cmd/relay`
+
+---
+
 ## v1.0.43 (2026-05-23)
 
 ### Bug Fixes / 修复
