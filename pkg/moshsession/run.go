@@ -99,6 +99,10 @@ func Run(ctx context.Context, connector Connector, opts Options) error {
 		}
 	}()
 
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		_ = clearInitialMoshScreen(os.Stdout)
+	}
+
 	done := make(chan struct{})
 	defer close(done)
 	go copyInput(done, moshClient)
@@ -234,6 +238,15 @@ func terminalSize() (int, int) {
 		}
 	}
 	return 80, 24
+}
+
+func initialMoshClearSequence() []byte {
+	return []byte("\x1b[0m\x1b[2J\x1b[H")
+}
+
+func clearInitialMoshScreen(w io.Writer) error {
+	_, err := w.Write(initialMoshClearSequence())
+	return err
 }
 
 func randomSessionName() (string, error) {

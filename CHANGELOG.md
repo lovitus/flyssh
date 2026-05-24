@@ -1,5 +1,20 @@
 # Changelog / 更新日志
 
+## v2.0.1 (2026-05-24)
+
+### Bug Fixes / 修复
+
+- **Clear the visible terminal screen when entering `--mosh`** — after the initial attach succeeds and the local terminal enters raw mode, FlySSH now clears the current visible screen once before starting the mosh output loop. This removes stale PowerShell/Windows Terminal content from the first mosh screen without clearing scrollback or affecting reconnect refresh behavior / 修复 `--mosh` 首次进入时 PowerShell/Windows Terminal 旧内容残留的问题：初次 attach 成功并进入 raw mode 后，启动 mosh 输出循环前只清一次当前可见屏，不清 scrollback，也不影响断线重连后的刷新逻辑。
+
+### Verification / 验证
+
+- `go test ./pkg/moshsession`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-mosh-initial-clear.exe .`
+- `git diff --check`
+
+---
+
 ## v2.0.0 (2026-05-23)
 
 ### Major Release / 大版本发布

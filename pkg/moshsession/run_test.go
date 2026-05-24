@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -154,3 +155,36 @@ func TestWaitReconnectCanBeInterrupted(t *testing.T) {
 		t.Fatalf("err = %v, want context canceled", err)
 	}
 }
+
+func TestInitialMoshClearSequence(t *testing.T) {
+	if got, want := string(initialMoshClearSequence()), "\x1b[0m\x1b[2J\x1b[H"; got != want {
+		t.Fatalf("clear sequence = %q, want %q", got, want)
+	}
+}
+
+func TestClearInitialMoshScreenWritesSequence(t *testing.T) {
+	var buf bytes.Buffer
+	if err := clearInitialMoshScreen(&buf); err != nil {
+		t.Fatalf("clearInitialMoshScreen returned error: %v", err)
+	}
+	if got, want := buf.String(), "\x1b[0m\x1b[2J\x1b[H"; got != want {
+		t.Fatalf("written clear sequence = %q, want %q", got, want)
+	}
+}
+
+func TestClearInitialMoshScreenReturnsWriteError(t *testing.T) {
+	err := clearInitialMoshScreen(failingWriter{})
+	if !errors.Is(err, errFailingWriter) {
+		t.Fatalf("err = %v, want %v", err, errFailingWriter)
+	}
+}
+
+var errFailingWriter = errors.New("write failed")
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errFailingWriter
+}
+
+var _ io.Writer = failingWriter{}
