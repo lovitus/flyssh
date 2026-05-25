@@ -1,0 +1,15 @@
+Package: flyssh
+Version: 2.0.3-1
+Architecture: arm64
+Maintainer: FlySSH Maintainers <noreply@github.com>
+Installed-Size: 16704
+Filename: pool/main/f/flyssh/flyssh_2.0.3_arm64.deb
+Size: 13605480
+MD5sum: c153f3a2a39dd388e605f366e0dfd21f
+SHA1: 6df4cab9011fcfbf0e125f5f6f21bc64287fd52d
+SHA256: cd305ca752896bf264a8532d471b68ebf7619d0ec7d39f2cddc4ba4282b00059
+Section: utils
+Priority: optional
+Homepage: https://github.com/lovitus/flyssh
+Description: Portable SSH client with SOCKS, multi-hop, transfer GUI, gateway, and mosh.
+
