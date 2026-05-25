@@ -1,5 +1,24 @@
 # Changelog / 更新日志
 
+## v2.0.3 (2026-05-25)
+
+### Packaging / 打包
+
+- **Add APT and RPM repository publishing** — stable releases now build Debian/Ubuntu and RPM packages for mainstream 64-bit Linux targets, publish signed repository metadata to GitHub Pages, and document `apt`, `dnf`, and `yum` install/update commands / 新增 APT 与 RPM 官方源发布：正式版本现在会为主流 64 位 Linux 生成 Debian/Ubuntu 与 RPM 包，将签名后的仓库 metadata 发布到 GitHub Pages，并在 README 中补充 `apt`、`dnf`、`yum` 安装和更新命令。
+- **Protect package repository updates from rollback** — the Linux package repository workflow keeps an explicit `latest.json` state file so manually rebuilding an older tag can add historical packages without downgrading latest metadata / 防止包源回滚：Linux 包源发布流程维护明确的 `latest.json` 状态文件，手动重跑旧 tag 时可追加历史包，但不会把 latest metadata 降级。
+- **Separate APT and RPM signing formats** — APT publishes a binary keyring while RPM publishes an ASCII armored public key; RPM v1 signs repository metadata but not individual RPM packages / 区分 APT 与 RPM 签名格式：APT 发布 binary keyring，RPM 发布 ASCII armored public key；RPM v1 签名仓库 metadata，暂不签名单个 RPM 包。
+
+### Verification / 验证
+
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-packaging-check.exe .`
+- `bash -n .github/scripts/build_linux_packages.sh .github/scripts/update_linux_repos.sh`
+- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release.yml")'`
+- `nfpm` package smoke test for amd64/arm64 deb and x86_64/aarch64 rpm
+- APT/RPM repository update script smoke test
+
+---
+
 ## v2.0.2 (2026-05-25)
 
 ### Packaging / 打包
