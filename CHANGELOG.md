@@ -1,5 +1,24 @@
 # Changelog / 更新日志
 
+## v2.0.2 (2026-05-25)
+
+### Packaging / 打包
+
+- **Add repository-local Homebrew and Scoop install support** — the repository now includes `Formula/flyssh.rb` and `bucket/flyssh.json`, so users can install and update FlySSH through Homebrew or Scoop without a separate package repository / 新增当前仓库内置 Homebrew 与 Scoop 安装支持：用户无需额外包仓库即可通过 Homebrew 或 Scoop 安装和更新 FlySSH。
+- **Automatically update package manifests after releases** — the release workflow now rewrites the Homebrew formula and Scoop manifest from the freshly generated `checksums.txt` after publishing release assets, then commits the updated manifests back to `main` / 发布流程会在上传 release assets 后，根据新生成的 `checksums.txt` 自动更新 Homebrew formula 和 Scoop manifest，并提交回 `main`。
+- **Add formal MIT license file** — add `LICENSE` and link it from README so package managers and users can discover licensing directly / 新增正式 MIT `LICENSE` 文件，并在 README 中链接，方便包管理器和用户识别许可证。
+
+### Verification / 验证
+
+- `ruby -c Formula/flyssh.rb`
+- `brew style Formula/flyssh.rb`
+- `python3 -m json.tool bucket/flyssh.json`
+- `python3 -m py_compile .github/scripts/update_package_manifests.py`
+- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/release.yml")'`
+- `git diff --check`
+
+---
+
 ## v2.0.1 (2026-05-24)
 
 ### Bug Fixes / 修复

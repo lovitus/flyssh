@@ -27,6 +27,39 @@ OpenSSH 无法原生通过 SOCKS5 代理连接，通常需要借助 Proxifier、
 
 ## Installation / 安装
 
+### Package managers / 包管理器
+
+FlySsh keeps Homebrew tap and Scoop bucket files in this repository. No extra
+packaging repository is required.
+
+FlySsh 的 Homebrew tap 和 Scoop bucket 文件直接放在本仓库中，不需要额外维护包管理仓库。
+
+#### Scoop (Windows)
+
+```powershell
+scoop bucket add flyssh https://github.com/lovitus/flyssh
+scoop install flyssh
+
+# Update later / 后续更新
+scoop update flyssh
+```
+
+#### Homebrew (macOS/Linux)
+
+```bash
+brew tap lovitus/flyssh https://github.com/lovitus/flyssh
+brew install flyssh
+
+# Update later / 后续更新
+brew update
+brew upgrade flyssh
+```
+
+Because this repository is not named `homebrew-flyssh`, include the repository
+URL when running `brew tap`.
+
+由于本仓库名不是 `homebrew-flyssh`，执行 `brew tap` 时需要带上仓库 URL。
+
 ### Pre-built binaries / 预编译二进制
 
 Download from [Releases](https://github.com/lovitus/flyssh/releases).
@@ -644,4 +677,4 @@ Legacy Two-Hop:
 
 ## License / 许可证
 
-MIT
+[MIT](./LICENSE)
