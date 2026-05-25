@@ -60,6 +60,52 @@ URL when running `brew tap`.
 
 由于本仓库名不是 `homebrew-flyssh`，执行 `brew tap` 时需要带上仓库 URL。
 
+#### APT (Debian/Ubuntu amd64/arm64)
+
+```bash
+arch="$(dpkg --print-architecture)"
+case "$arch" in amd64|arm64) ;; *) echo "unsupported APT arch: $arch" >&2; exit 1;; esac
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://lovitus.github.io/flyssh/apt/flyssh-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/flyssh-archive-keyring.gpg >/dev/null
+echo "deb [arch=$arch signed-by=/etc/apt/keyrings/flyssh-archive-keyring.gpg] https://lovitus.github.io/flyssh/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/flyssh.list >/dev/null
+sudo apt update
+sudo apt install flyssh
+
+# Update later / 后续更新
+sudo apt update
+sudo apt upgrade flyssh
+```
+
+#### RPM/YUM/DNF (x86_64/aarch64)
+
+```bash
+sudo tee /etc/yum.repos.d/flyssh.repo >/dev/null <<'EOF'
+[flyssh]
+name=FlySSH stable repository
+baseurl=https://lovitus.github.io/flyssh/rpm/$basearch
+enabled=1
+repo_gpgcheck=1
+gpgcheck=0
+gpgkey=https://lovitus.github.io/flyssh/rpm/RPM-GPG-KEY-flyssh
+EOF
+
+sudo dnf install flyssh
+# or: sudo yum install flyssh
+
+# Update later / 后续更新
+sudo dnf upgrade flyssh
+# or: sudo yum upgrade flyssh
+```
+
+The RPM repository signs repository metadata (`repomd.xml`) in v1. Individual
+RPM packages are not signed yet, so the repo file intentionally uses
+`repo_gpgcheck=1` and `gpgcheck=0`.
+
+RPM 源 v1 签名的是仓库 metadata（`repomd.xml`），暂不对单个 RPM 包签名，因此
+repo 配置中使用 `repo_gpgcheck=1` 和 `gpgcheck=0`。
+
 ### Pre-built binaries / 预编译二进制
 
 Download from [Releases](https://github.com/lovitus/flyssh/releases).

@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  pages: write
 
 jobs:
   build-and-release:
@@ -42,10 +43,29 @@ jobs:
 
           VERSION="${TAG#v}"
           OUT_DIR="dist/${TAG}"
+          if [[ "${TAG}" == *-* ]]; then
+            STABLE="false"
+          else
+            STABLE="true"
+          fi
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "out_dir=${OUT_DIR}" >> "$GITHUB_OUTPUT"
+          echo "stable=${STABLE}" >> "$GITHUB_OUTPUT"
+
+      - name: Preflight package signing secrets
+        if: ${{ steps.meta.outputs.stable == 'true' }}
+        shell: bash
+        env:
+          PACKAGE_GPG_PRIVATE_KEY: ${{ secrets.PACKAGE_GPG_PRIVATE_KEY }}
+          PACKAGE_GPG_PASSPHRASE: ${{ secrets.PACKAGE_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PACKAGE_GPG_PRIVATE_KEY}" || -z "${PACKAGE_GPG_PASSPHRASE}" ]]; then
+            echo "Stable releases require PACKAGE_GPG_PRIVATE_KEY and PACKAGE_GPG_PASSPHRASE." >&2
+            exit 1
+          fi
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -157,9 +177,32 @@ jobs:
             fi
           done
 
+      - name: Install Linux packaging tools
+        if: ${{ steps.meta.outputs.stable == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y apt-utils createrepo-c dpkg-dev gnupg rpm
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build Linux packages
+        if: ${{ steps.meta.outputs.stable == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          .github/scripts/build_linux_packages.sh \
+            --version "${{ steps.meta.outputs.version }}" \
+            --out-dir "${{ steps.meta.outputs.out_dir }}"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
           (
-            cd "${out_dir}"
-            sha256sum *.tar.gz *.zip > checksums.txt
+            cd "${{ steps.meta.outputs.out_dir }}"
+            sha256sum * > checksums.txt
           )
 
       - name: Prepare release notes from changelog
@@ -210,26 +253,27 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           fail_on_unmatched_files: true
-          files: |
-            ${{ steps.meta.outputs.out_dir }}/*.tar.gz
-            ${{ steps.meta.outputs.out_dir }}/*.zip
-            ${{ steps.meta.outputs.out_dir }}/checksums.txt
+          files: ${{ steps.meta.outputs.out_dir }}/*
           body_path: RELEASE_NOTES.md
           prerelease: ${{ contains(steps.meta.outputs.tag, '-') }}
 
+      - name: Checkout main for package manifests
+        if: ${{ steps.meta.outputs.stable == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: manifest-main
+
       - name: Update package manifests
-        if: ${{ !contains(steps.meta.outputs.tag, '-') }}
+        if: ${{ steps.meta.outputs.stable == 'true' }}
         shell: bash
+        working-directory: manifest-main
         run: |
           set -euo pipefail
 
-          cp ".github/scripts/update_package_manifests.py" "${RUNNER_TEMP}/update_package_manifests.py"
-          cp "${{ steps.meta.outputs.out_dir }}/checksums.txt" "${RUNNER_TEMP}/checksums.txt"
+          cp "${GITHUB_WORKSPACE}/${{ steps.meta.outputs.out_dir }}/checksums.txt" "${RUNNER_TEMP}/checksums.txt"
 
-          git fetch origin main
-          git switch -C main origin/main
-
-          python3 "${RUNNER_TEMP}/update_package_manifests.py" \
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/update_package_manifests.py" \
             --version "${{ steps.meta.outputs.version }}" \
             --checksums "${RUNNER_TEMP}/checksums.txt"
 
@@ -246,3 +290,68 @@ jobs:
           git add Formula/flyssh.rb bucket/flyssh.json
           git commit -m "chore: update package manifests for ${{ steps.meta.outputs.tag }}"
           git push origin HEAD:main
+
+      - name: Prepare package repository worktree
+        if: ${{ steps.meta.outputs.stable == 'true' }}
+        id: package_pages
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pages_dir="${RUNNER_TEMP}/flyssh-package-pages"
+          rm -rf "${pages_dir}"
+          git clone --no-checkout "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${pages_dir}"
+          cd "${pages_dir}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          echo "dir=${pages_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Linux package repositories
+        if: ${{ steps.meta.outputs.stable == 'true' }}
+        shell: bash
+        env:
+          PACKAGE_GPG_PRIVATE_KEY: ${{ secrets.PACKAGE_GPG_PRIVATE_KEY }}
+          PACKAGE_GPG_PASSPHRASE: ${{ secrets.PACKAGE_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          .github/scripts/update_linux_repos.sh \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --artifacts "${{ steps.meta.outputs.out_dir }}" \
+            --pages-dir "${{ steps.package_pages.outputs.dir }}"
+
+      - name: Publish Linux package repositories
+        if: ${{ steps.meta.outputs.stable == 'true' }}
+        shell: bash
+        working-directory: ${{ steps.package_pages.outputs.dir }}
+        run: |
+          set -euo pipefail
+          if git status --porcelain | grep . >/dev/null; then
+            git add -A
+            git commit -m "chore: update Linux package repositories for ${{ steps.meta.outputs.tag }}"
+            git push origin HEAD:gh-pages
+          else
+            echo "Linux package repositories are already up to date."
+          fi
+
+      - name: Ensure GitHub Pages is enabled
+        if: ${{ steps.meta.outputs.stable == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
+            echo "GitHub Pages is already enabled."
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/pages" \
+              -f "source[branch]=gh-pages" \
+              -f "source[path]=/"
+          fi
