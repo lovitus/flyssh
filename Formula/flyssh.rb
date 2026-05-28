@@ -1,30 +1,30 @@
 class Flyssh < Formula
   desc "Portable SSH client with SOCKS, multi-hop, transfer GUI, gateway, and mosh"
   homepage "https://github.com/lovitus/flyssh"
-  version "2.0.3"
+  version "2.0.4"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/lovitus/flyssh/releases/download/v2.0.3/flyssh-2.0.3-darwin-arm64.tar.gz"
-      sha256 "6150e590f94ed6262438f101d83815800741643c95fb72834cd6c2db3c3c99d6"
+      url "https://github.com/lovitus/flyssh/releases/download/v2.0.4/flyssh-2.0.4-darwin-arm64.tar.gz"
+      sha256 "fd35473e9ec5ade10758d749e0971a441cf79a461fc4df097eaa56a89ea6a5f7"
     end
 
     on_intel do
-      url "https://github.com/lovitus/flyssh/releases/download/v2.0.3/flyssh-2.0.3-darwin-amd64.tar.gz"
-      sha256 "e8f91274bc1b83e2f9062099ca5018d89f5aa65f7cf5acbccea4f4bd55ad4880"
+      url "https://github.com/lovitus/flyssh/releases/download/v2.0.4/flyssh-2.0.4-darwin-amd64.tar.gz"
+      sha256 "d11ef466312e8a451748175aee13cf52c364eb2de2d2f456ff3dccfd19f6ff40"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/lovitus/flyssh/releases/download/v2.0.3/flyssh-2.0.3-linux-arm64.tar.gz"
-      sha256 "de67d3d02ed2e2162b8f00dd07b1b9a63e9957e7011b9ec7ccdec74e82b0a705"
+      url "https://github.com/lovitus/flyssh/releases/download/v2.0.4/flyssh-2.0.4-linux-arm64.tar.gz"
+      sha256 "1236f7b767f79c763d22d7c2180a13dafa153478b1ae8e1d5f32f11372f90aad"
     end
 
     on_intel do
-      url "https://github.com/lovitus/flyssh/releases/download/v2.0.3/flyssh-2.0.3-linux-amd64.tar.gz"
-      sha256 "7bef2a1f60a91d5ff5e67b2e9c6b2675db418ebc2b1d9952cefd914a69093690"
+      url "https://github.com/lovitus/flyssh/releases/download/v2.0.4/flyssh-2.0.4-linux-amd64.tar.gz"
+      sha256 "4813c1a92145ed8fc6f028cdf887fccfc895c756d31497edc28f9963f2385a4c"
     end
   end
 
