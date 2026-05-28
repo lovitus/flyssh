@@ -124,6 +124,66 @@ func TestRsyncSafeLocalPathForWindowsMsysRsync(t *testing.T) {
 	}
 }
 
+func TestRsyncSafeLocalPathRetryModes(t *testing.T) {
+	got := rsyncSafeLocalPathForOSWithMode(`E:\aria2-down\a b.txt`, `C:\cygwin64\bin\rsync.exe`, "windows", rsyncLocalPathNative)
+	if got != `E:\aria2-down\a b.txt` {
+		t.Fatalf("unexpected native path: got %q", got)
+	}
+	got = rsyncSafeLocalPathForOSWithMode(`E:\aria2-down\a b.txt`, `C:\cygwin64\bin\rsync.exe`, "windows", rsyncLocalPathMsys)
+	if got != `/e/aria2-down/a b.txt` {
+		t.Fatalf("unexpected msys path: got %q", got)
+	}
+	got = rsyncSafeLocalPathForOSWithMode(`E:\aria2-down\a b.txt`, `C:\cygwin64\bin\rsync.exe`, "windows", rsyncLocalPathCygdrive)
+	if got != `/cygdrive/e/aria2-down/a b.txt` {
+		t.Fatalf("unexpected cygdrive path: got %q", got)
+	}
+}
+
+func TestBuildRsyncCommandArgsNativeRetryMode(t *testing.T) {
+	spec := &Spec{
+		Mode:      ModeRsync,
+		Direction: DirectionUpload,
+		Flags:     []string{"-avh"},
+		Sources:   []string{`D:\Deploy_部署\BPM v1.1\bpm-model.jar`},
+		Target:    "/tmp/llf",
+	}
+
+	native := buildRsyncCommandArgsWithLocalPathMode(spec, `C:\flyssh\flyssh.exe`, `C:\cygwin64\bin\rsync.exe`, rsyncLocalPathNative)
+	wantNative := []string{
+		"-e", `'C:\flyssh\flyssh.exe' '--internal-rsync-transport'`,
+		"-avh",
+		`D:\Deploy_部署\BPM v1.1\bpm-model.jar`,
+		"flyssh:/tmp/llf",
+	}
+	if !reflect.DeepEqual(native, wantNative) {
+		t.Fatalf("unexpected native args:\n got: %#v\nwant: %#v", native, wantNative)
+	}
+
+}
+
+func TestShouldRetryRsyncWithAlternateWindowsPaths(t *testing.T) {
+	spec := &Spec{
+		Mode:      ModeRsync,
+		Direction: DirectionUpload,
+		Sources:   []string{`D:\Deploy_部署\BPM v1.1\bpm-model.jar`},
+		Target:    "/tmp/llf",
+	}
+	stderrText := `rsync: [sender] change_dir "/cygdrive/c/Windows/System32/"/cygdrive/d/Deploy_部署/BPM v1.1" failed: No such file or directory (2)`
+
+	if !shouldRetryRsyncWithAlternateWindowsPaths(spec, 23, stderrText, "windows") {
+		t.Fatal("expected Windows rsync change_dir quote symptom to trigger native retry")
+	}
+	if shouldRetryRsyncWithAlternateWindowsPaths(spec, 23, stderrText, "linux") {
+		t.Fatal("non-Windows should not retry")
+	}
+	if shouldRetryRsyncWithAlternateWindowsPaths(spec, 12, stderrText, "windows") {
+		t.Fatal("unrelated exit code should not retry")
+	}
+	if shouldRetryRsyncWithAlternateWindowsPaths(&Spec{Mode: ModeRsync, Direction: DirectionUpload, Sources: []string{"./src"}, Target: "/tmp"}, 23, stderrText, "windows") {
+		t.Fatal("non-Windows local operand should not retry")
+	}
+}
+
 func TestRsyncSafeLocalPathProbesUnknownRsyncCygdriveStyle(t *testing.T) {
 	resetRsyncLocalPathStyleCache()
 	oldPathExists := rsyncPathExists

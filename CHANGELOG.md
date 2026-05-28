@@ -1,5 +1,18 @@
 # Changelog / 更新日志
 
+## v2.0.4 (2026-05-28)
+
+### Fixes / 修复
+
+- **Add a targeted Windows rsync path retry** — when a Windows rsync upload/download first fails with the known `change_dir "..."/cygdrive/...` or `change_dir "..."/d/...` quoting/path-style symptom, FlySSH now retries once through the remaining Windows local path forms (`/cygdrive/...`, `/d/...`, native `D:\...`) while leaving the normal rsync probe/fallback path unchanged / 新增 Windows rsync 路径兜底重试：当首次 rsync 传输命中特定 `change_dir "..."/cygdrive/...` 或 `change_dir "..."/d/...` 引号/路径风格异常时，FlySSH 会在不改变原有 probe/fallback 正常路径的前提下，补试其它 Windows 本地路径形态（`/cygdrive/...`、`/d/...`、原生 `D:\...`）。
+
+### Verification / 验证
+
+- `go test ./pkg/transfer`
+- `go test ./...`
+
+---
+
 ## v2.0.3 (2026-05-25)
 
 ### Packaging / 打包

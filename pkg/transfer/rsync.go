@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -37,10 +38,18 @@ var runRsyncListOnly = func(rsyncBin, path string) error {
 }
 
 type rsyncLocalPathStyle int
+type rsyncLocalPathMode int
 
 const (
 	rsyncPathStyleCygdrive rsyncLocalPathStyle = iota + 1
 	rsyncPathStyleMsys
+)
+
+const (
+	rsyncLocalPathDefault rsyncLocalPathMode = iota
+	rsyncLocalPathCygdrive
+	rsyncLocalPathMsys
+	rsyncLocalPathNative
 )
 
 var rsyncLocalPathStyleCache sync.Map
@@ -72,23 +81,57 @@ func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
 	}
 
 	args := buildRsyncCommandArgs(spec, executable, rsyncBin)
+	code, err, stderrText := runLocalRsyncCommand(opts, rsyncBin, args, payload, brokerEnv)
+	if err == nil {
+		return code, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		code = exitErr.ExitCode()
+		if shouldRetryRsyncWithAlternateWindowsPaths(spec, code, stderrText, runtime.GOOS) {
+			for _, mode := range retryRsyncLocalPathModes() {
+				retryArgs := buildRsyncCommandArgsWithLocalPathMode(spec, executable, rsyncBin, mode)
+				if sameStringSlice(args, retryArgs) {
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "flyssh: rsync path style failed; retrying with %s Windows local paths\n", mode)
+				code, err, stderrText = runLocalRsyncCommand(opts, rsyncBin, retryArgs, payload, brokerEnv)
+				if err == nil {
+					return code, nil
+				}
+				if retryExitErr, ok := err.(*exec.ExitError); ok {
+					code = retryExitErr.ExitCode()
+					if shouldRetryRsyncWithAlternateWindowsPaths(spec, code, stderrText, runtime.GOOS) {
+						continue
+					}
+					return code, nil
+				}
+				return 1, fmt.Errorf("run local rsync retry: %w", err)
+			}
+		}
+		return code, nil
+	}
+	return 1, fmt.Errorf("run local rsync: %w", err)
+}
+
+func runLocalRsyncCommand(opts *cli.Options, rsyncBin string, args []string, payload string, brokerEnv []string) (int, error, string) {
 	if opts.Verbose {
 		fmt.Fprintf(os.Stderr, "flyssh: local rsync command: %s\n", formatRsyncCommand(rsyncBin, args))
 	}
+	var stderrBuf bytes.Buffer
 	cmd := exec.Command(rsyncBin, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 	cmd.Env = append(os.Environ(), InternalRsyncOptionsEnv+"="+payload)
 	cmd.Env = append(cmd.Env, brokerEnv...)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), nil
+			return exitErr.ExitCode(), err, stderrBuf.String()
 		}
-		return 1, fmt.Errorf("run local rsync: %w", err)
+		return 1, err, stderrBuf.String()
 	}
-	return 0, nil
+	return 0, nil, stderrBuf.String()
 }
 
 func EncodeInternalRsyncOptions(opts *cli.Options) (string, error) {
@@ -128,20 +171,24 @@ func DecodeInternalRsyncOptions(payload string) (*cli.Options, error) {
 }
 
 func buildRsyncCommandArgs(spec *Spec, executable, rsyncBin string) []string {
+	return buildRsyncCommandArgsWithLocalPathMode(spec, executable, rsyncBin, rsyncLocalPathDefault)
+}
+
+func buildRsyncCommandArgsWithLocalPathMode(spec *Spec, executable, rsyncBin string, mode rsyncLocalPathMode) []string {
 	args := []string{"-e", buildRsyncTransportCommand(executable)}
 	args = append(args, spec.Flags...)
 
 	switch spec.Direction {
 	case DirectionUpload:
 		for _, src := range spec.Sources {
-			args = append(args, rsyncSafeLocalPath(src, rsyncBin))
+			args = append(args, rsyncSafeLocalPathWithMode(src, rsyncBin, mode))
 		}
 		args = append(args, buildInternalRemoteOperand(spec.Target))
 	case DirectionDownload:
 		for _, source := range spec.Sources {
 			args = append(args, buildInternalRemoteOperand(source))
 		}
-		args = append(args, rsyncSafeLocalPath(spec.Target, rsyncBin))
+		args = append(args, rsyncSafeLocalPathWithMode(spec.Target, rsyncBin, mode))
 	}
 	return args
 }
@@ -164,11 +211,27 @@ func buildInternalRemoteOperand(path string) string {
 }
 
 func rsyncSafeLocalPath(p, rsyncBin string) string {
-	return rsyncSafeLocalPathForOS(p, rsyncBin, runtime.GOOS)
+	return rsyncSafeLocalPathWithMode(p, rsyncBin, rsyncLocalPathDefault)
+}
+
+func rsyncSafeLocalPathWithMode(p, rsyncBin string, mode rsyncLocalPathMode) string {
+	return rsyncSafeLocalPathForOSWithMode(p, rsyncBin, runtime.GOOS, mode)
 }
 
 func rsyncSafeLocalPathForOS(p, rsyncBin, goos string) string {
+	return rsyncSafeLocalPathForOSWithMode(p, rsyncBin, goos, rsyncLocalPathDefault)
+}
+
+func rsyncSafeLocalPathForOSWithMode(p, rsyncBin, goos string, mode rsyncLocalPathMode) string {
 	if goos != "windows" || !isWindowsDrivePath(p) {
+		return p
+	}
+	switch mode {
+	case rsyncLocalPathCygdrive:
+		return convertWindowsDrivePath(p, rsyncPathStyleCygdrive)
+	case rsyncLocalPathMsys:
+		return convertWindowsDrivePath(p, rsyncPathStyleMsys)
+	case rsyncLocalPathNative:
 		return p
 	}
 	if style, ok := probeRsyncLocalPathStyle(rsyncBin, p); ok {
@@ -178,6 +241,66 @@ func rsyncSafeLocalPathForOS(p, rsyncBin, goos string) string {
 		return convertWindowsDrivePath(p, rsyncPathStyleCygdrive)
 	}
 	return convertWindowsDrivePath(p, rsyncPathStyleMsys)
+}
+
+func retryRsyncLocalPathModes() []rsyncLocalPathMode {
+	return []rsyncLocalPathMode{rsyncLocalPathCygdrive, rsyncLocalPathMsys, rsyncLocalPathNative}
+}
+
+func (mode rsyncLocalPathMode) String() string {
+	switch mode {
+	case rsyncLocalPathCygdrive:
+		return "/cygdrive"
+	case rsyncLocalPathMsys:
+		return "/drive"
+	case rsyncLocalPathNative:
+		return "native"
+	default:
+		return "default"
+	}
+}
+
+func shouldRetryRsyncWithAlternateWindowsPaths(spec *Spec, exitCode int, stderrText, goos string) bool {
+	if goos != "windows" || exitCode != 23 || !hasWindowsLocalRsyncOperand(spec) {
+		return false
+	}
+	return strings.Contains(stderrText, "change_dir ") &&
+		(strings.Contains(stderrText, `"/cygdrive/`) || containsQuotedMsysDrivePath(stderrText))
+}
+
+func hasWindowsLocalRsyncOperand(spec *Spec) bool {
+	switch spec.Direction {
+	case DirectionUpload:
+		for _, src := range spec.Sources {
+			if isWindowsDrivePath(src) {
+				return true
+			}
+		}
+	case DirectionDownload:
+		return isWindowsDrivePath(spec.Target)
+	}
+	return false
+}
+
+func containsQuotedMsysDrivePath(s string) bool {
+	for drive := byte('a'); drive <= 'z'; drive++ {
+		if strings.Contains(s, `"/`+string(drive)+`/`) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func convertWindowsDrivePath(p string, style rsyncLocalPathStyle) string {
