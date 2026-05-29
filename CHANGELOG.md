@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## v2.0.5 (2026-05-29)
+
+### Fixes / 修复
+
+- **Harden Windows rsync upload fallback** — after the normal rsync probe and `/cygdrive` / `/d` retries fail with the known Windows `change_dir "..."/...` quoting symptom, FlySSH now retries upload sources from their Windows parent directory and can use `--from0 --files-from=-` for filenames or directories containing spaces and non-ASCII characters. Multi-directory uploads are grouped safely when no delete or relative flags are present / 加强 Windows rsync 上传兜底：当常规 probe 以及 `/cygdrive` / `/d` 重试后仍命中特定 Windows `change_dir "..."/...` 引号异常时，FlySSH 会从 Windows 源父目录重试，并可用 `--from0 --files-from=-` 处理包含空格和非 ASCII 字符的文件名或目录名；不同目录上传在无 delete/relative flags 时按父目录安全分组重试。
+- **Remove unsafe native Windows rsync retry** — FlySSH no longer retries `D:\...` native paths because rsync can interpret drive-letter operands as remote host syntax / 移除不安全的原生 Windows 路径重试：`D:\...` 可能被 rsync 解析成远端 host 语法，因此不再作为兜底路径。
+
+### Verification / 验证
+
+- `go test ./pkg/transfer`
+- `go test ./...`
+
+---
+
 ## v2.0.4 (2026-05-28)
 
 ### Fixes / 修复

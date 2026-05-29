@@ -45,14 +45,20 @@ const (
 	rsyncPathStyleMsys
 )
 
+const maxRsyncFilesFromGroups = 16
+
 const (
 	rsyncLocalPathDefault rsyncLocalPathMode = iota
 	rsyncLocalPathCygdrive
 	rsyncLocalPathMsys
-	rsyncLocalPathNative
 )
 
 var rsyncLocalPathStyleCache sync.Map
+
+type rsyncSourceGroup struct {
+	Dir   string
+	Names []string
+}
 
 func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
 	rsyncBin, err := resolveRsyncBinary()
@@ -81,7 +87,7 @@ func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
 	}
 
 	args := buildRsyncCommandArgs(spec, executable, rsyncBin)
-	code, err, stderrText := runLocalRsyncCommand(opts, rsyncBin, args, payload, brokerEnv)
+	code, err, stderrText := runLocalRsyncCommand(opts, rsyncBin, args, payload, brokerEnv, "")
 	if err == nil {
 		return code, nil
 	}
@@ -94,7 +100,7 @@ func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
 					continue
 				}
 				fmt.Fprintf(os.Stderr, "flyssh: rsync path style failed; retrying with %s Windows local paths\n", mode)
-				code, err, stderrText = runLocalRsyncCommand(opts, rsyncBin, retryArgs, payload, brokerEnv)
+				code, err, stderrText = runLocalRsyncCommand(opts, rsyncBin, retryArgs, payload, brokerEnv, "")
 				if err == nil {
 					return code, nil
 				}
@@ -107,19 +113,61 @@ func RunLocalRsync(opts *cli.Options, spec *Spec) (int, error) {
 				}
 				return 1, fmt.Errorf("run local rsync retry: %w", err)
 			}
+			// The remaining fallbacks are upload-only. They recover Windows rsync
+			// builds that misparse absolute source operands by running from the
+			// source directory and passing only child names. Download target mkdir
+			// failures are not equivalent and should not use these upload paths.
+			if retryArgs, workDir, ok := buildRsyncUploadArgsRelativeToCommonDir(spec, executable); ok {
+				fmt.Fprintln(os.Stderr, "flyssh: rsync path style failed; retrying from the Windows source directory")
+				code, err, _ = runLocalRsyncCommand(opts, rsyncBin, retryArgs, payload, brokerEnv, workDir)
+				if err == nil {
+					return code, nil
+				}
+				if retryExitErr, ok := err.(*exec.ExitError); ok {
+					code = retryExitErr.ExitCode()
+					if code == 23 {
+						group, ok := singleSourceGroup(spec.Sources)
+						if !ok {
+							return code, nil
+						}
+						filesFromArgs := buildRsyncFilesFromArgs(spec, executable)
+						fmt.Fprintln(os.Stderr, "flyssh: rsync path style failed; retrying with --files-from from the Windows source directory")
+						code, err, _ = runLocalRsyncCommand(opts, rsyncBin, filesFromArgs, payload, brokerEnv, group.Dir, rsyncFilesFromInput(group))
+						if err == nil {
+							return code, nil
+						}
+						if filesFromExitErr, ok := err.(*exec.ExitError); ok {
+							return filesFromExitErr.ExitCode(), nil
+						}
+						return 1, fmt.Errorf("run local rsync files-from retry: %w", err)
+					}
+					return code, nil
+				}
+				return 1, fmt.Errorf("run local rsync relative retry: %w", err)
+			}
+			if code, ok := runRsyncFilesFromGroupedRetry(opts, spec, executable, rsyncBin, payload, brokerEnv); ok {
+				return code, nil
+			}
 		}
 		return code, nil
 	}
 	return 1, fmt.Errorf("run local rsync: %w", err)
 }
 
-func runLocalRsyncCommand(opts *cli.Options, rsyncBin string, args []string, payload string, brokerEnv []string) (int, error, string) {
+func runLocalRsyncCommand(opts *cli.Options, rsyncBin string, args []string, payload string, brokerEnv []string, workDir string, stdin ...io.Reader) (int, error, string) {
 	if opts.Verbose {
 		fmt.Fprintf(os.Stderr, "flyssh: local rsync command: %s\n", formatRsyncCommand(rsyncBin, args))
 	}
 	var stderrBuf bytes.Buffer
 	cmd := exec.Command(rsyncBin, args...)
-	cmd.Stdin = os.Stdin
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+	if len(stdin) > 0 && stdin[0] != nil {
+		cmd.Stdin = stdin[0]
+	} else {
+		cmd.Stdin = os.Stdin
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 	cmd.Env = append(os.Environ(), InternalRsyncOptionsEnv+"="+payload)
@@ -193,6 +241,160 @@ func buildRsyncCommandArgsWithLocalPathMode(spec *Spec, executable, rsyncBin str
 	return args
 }
 
+func buildRsyncUploadArgsRelativeToCommonDir(spec *Spec, executable string) ([]string, string, bool) {
+	groups, ok := groupSourcesByWindowsDir(spec.Sources)
+	if spec.Direction != DirectionUpload || !ok || len(groups) != 1 || hasRelativeFlag(spec.Flags) {
+		return nil, "", false
+	}
+	args := []string{"-e", buildRsyncTransportCommand(executable)}
+	args = append(args, spec.Flags...)
+	for _, name := range groups[0].Names {
+		args = append(args, "./"+name)
+	}
+	args = append(args, buildInternalRemoteOperand(spec.Target))
+	return args, groups[0].Dir, true
+}
+
+func buildRsyncFilesFromArgs(spec *Spec, executable string) []string {
+	args := []string{"-e", buildRsyncTransportCommand(executable)}
+	args = append(args, ensureRecursiveFlag(spec.Flags)...)
+	args = append(args, "--from0", "--files-from=-", ".", buildInternalRemoteOperand(spec.Target))
+	return args
+}
+
+func runRsyncFilesFromGroupedRetry(opts *cli.Options, spec *Spec, executable, rsyncBin, payload string, brokerEnv []string) (int, bool) {
+	if spec.Direction != DirectionUpload || hasDeleteFlag(spec.Flags) || hasRelativeFlag(spec.Flags) {
+		return 0, false
+	}
+	groups, ok := groupSourcesByWindowsDir(spec.Sources)
+	if !ok || len(groups) == 0 || len(groups) > maxRsyncFilesFromGroups {
+		return 0, false
+	}
+	args := buildRsyncFilesFromArgs(spec, executable)
+	for _, group := range groups {
+		fmt.Fprintf(os.Stderr, "flyssh: rsync path style failed; retrying group from Windows source directory %s with --files-from\n", group.Dir)
+		_, err, _ := runLocalRsyncCommand(opts, rsyncBin, args, payload, brokerEnv, group.Dir, rsyncFilesFromInput(group))
+		if err == nil {
+			continue
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode(), true
+		}
+		return 1, true
+	}
+	return 0, true
+}
+
+func singleSourceGroup(sources []string) (rsyncSourceGroup, bool) {
+	groups, ok := groupSourcesByWindowsDir(sources)
+	if ok && len(groups) == 1 {
+		return groups[0], true
+	}
+	return rsyncSourceGroup{}, false
+}
+
+func rsyncFilesFromInput(group rsyncSourceGroup) io.Reader {
+	var b strings.Builder
+	for _, name := range group.Names {
+		b.WriteString(name)
+		b.WriteByte(0)
+	}
+	return strings.NewReader(b.String())
+}
+
+func ensureRecursiveFlag(flags []string) []string {
+	hasArchive := false
+	hasRecursive := false
+	for _, flag := range flags {
+		switch flag {
+		case "-a", "--archive":
+			hasArchive = true
+		case "-r", "--recursive", "--no-recursive":
+			hasRecursive = true
+		}
+	}
+	if !hasArchive || hasRecursive {
+		return flags
+	}
+	out := append([]string(nil), flags...)
+	return append(out, "-r")
+}
+
+func hasDeleteFlag(flags []string) bool {
+	for _, flag := range flags {
+		switch flag {
+		case "--delete", "--delete-before", "--delete-during", "--delete-delay", "--delete-after", "--delete-excluded", "--del":
+			return true
+		}
+	}
+	return false
+}
+
+func hasRelativeFlag(flags []string) bool {
+	for _, flag := range flags {
+		if flag == "-R" || flag == "--relative" {
+			return true
+		}
+	}
+	return false
+}
+
+func groupSourcesByWindowsDir(sources []string) ([]rsyncSourceGroup, bool) {
+	if len(sources) == 0 {
+		return nil, false
+	}
+	groups := make([]rsyncSourceGroup, 0)
+	for _, src := range sources {
+		if !isWindowsDrivePath(src) {
+			return nil, false
+		}
+		dir, base, ok := splitWindowsPathDirBase(src)
+		if !ok {
+			return nil, false
+		}
+		if idx, ok := findRsyncSourceGroup(groups, dir); ok {
+			groups[idx].Names = append(groups[idx].Names, base)
+			continue
+		}
+		groups = append(groups, rsyncSourceGroup{Dir: dir, Names: []string{base}})
+	}
+	return groups, true
+}
+
+func findRsyncSourceGroup(groups []rsyncSourceGroup, dir string) (int, bool) {
+	normalized := normalizeWindowsPathForCompare(dir)
+	for i, group := range groups {
+		if strings.EqualFold(normalizeWindowsPathForCompare(group.Dir), normalized) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func splitWindowsPathDirBase(p string) (string, string, bool) {
+	p = strings.TrimRight(p, `\/`)
+	if len(p) <= 3 {
+		return "", "", false
+	}
+	idx := strings.LastIndexAny(p, `\/`)
+	if idx < 0 || idx == len(p)-1 {
+		return "", "", false
+	}
+	dir := p[:idx]
+	base := p[idx+1:]
+	if len(dir) == 2 && dir[1] == ':' {
+		dir += `\`
+	}
+	if base == "" || base == "." || base == ".." {
+		return "", "", false
+	}
+	return dir, base, true
+}
+
+func normalizeWindowsPathForCompare(p string) string {
+	return strings.ReplaceAll(p, "/", `\`)
+}
+
 func formatRsyncCommand(rsyncBin string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, shellEscape(rsyncBin))
@@ -231,8 +433,6 @@ func rsyncSafeLocalPathForOSWithMode(p, rsyncBin, goos string, mode rsyncLocalPa
 		return convertWindowsDrivePath(p, rsyncPathStyleCygdrive)
 	case rsyncLocalPathMsys:
 		return convertWindowsDrivePath(p, rsyncPathStyleMsys)
-	case rsyncLocalPathNative:
-		return p
 	}
 	if style, ok := probeRsyncLocalPathStyle(rsyncBin, p); ok {
 		return convertWindowsDrivePath(p, style)
@@ -244,7 +444,7 @@ func rsyncSafeLocalPathForOSWithMode(p, rsyncBin, goos string, mode rsyncLocalPa
 }
 
 func retryRsyncLocalPathModes() []rsyncLocalPathMode {
-	return []rsyncLocalPathMode{rsyncLocalPathCygdrive, rsyncLocalPathMsys, rsyncLocalPathNative}
+	return []rsyncLocalPathMode{rsyncLocalPathCygdrive, rsyncLocalPathMsys}
 }
 
 func (mode rsyncLocalPathMode) String() string {
@@ -253,14 +453,16 @@ func (mode rsyncLocalPathMode) String() string {
 		return "/cygdrive"
 	case rsyncLocalPathMsys:
 		return "/drive"
-	case rsyncLocalPathNative:
-		return "native"
 	default:
 		return "default"
 	}
 }
 
 func shouldRetryRsyncWithAlternateWindowsPaths(spec *Spec, exitCode int, stderrText, goos string) bool {
+	// This predicate intentionally covers sender-side Windows source path
+	// failures reported as exit 23/change_dir. Receiver-side mkdir failures
+	// during downloads are a separate recovery problem and are not handled by
+	// the upload fallback paths below.
 	if goos != "windows" || exitCode != 23 || !hasWindowsLocalRsyncOperand(spec) {
 		return false
 	}

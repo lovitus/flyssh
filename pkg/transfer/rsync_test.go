@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,11 +126,7 @@ func TestRsyncSafeLocalPathForWindowsMsysRsync(t *testing.T) {
 }
 
 func TestRsyncSafeLocalPathRetryModes(t *testing.T) {
-	got := rsyncSafeLocalPathForOSWithMode(`E:\aria2-down\a b.txt`, `C:\cygwin64\bin\rsync.exe`, "windows", rsyncLocalPathNative)
-	if got != `E:\aria2-down\a b.txt` {
-		t.Fatalf("unexpected native path: got %q", got)
-	}
-	got = rsyncSafeLocalPathForOSWithMode(`E:\aria2-down\a b.txt`, `C:\cygwin64\bin\rsync.exe`, "windows", rsyncLocalPathMsys)
+	got := rsyncSafeLocalPathForOSWithMode(`E:\aria2-down\a b.txt`, `C:\cygwin64\bin\rsync.exe`, "windows", rsyncLocalPathMsys)
 	if got != `/e/aria2-down/a b.txt` {
 		t.Fatalf("unexpected msys path: got %q", got)
 	}
@@ -139,26 +136,166 @@ func TestRsyncSafeLocalPathRetryModes(t *testing.T) {
 	}
 }
 
-func TestBuildRsyncCommandArgsNativeRetryMode(t *testing.T) {
+func TestBuildRsyncUploadArgsRelativeToCommonDir(t *testing.T) {
 	spec := &Spec{
 		Mode:      ModeRsync,
 		Direction: DirectionUpload,
 		Flags:     []string{"-avh"},
+		Sources: []string{
+			`D:\Deploy_部署\BPM v1.1\bpm-model.jar`,
+			`D:\Deploy_部署\BPM v1.1\bpm-runtime.jar`,
+		},
+		Target: "/tmp/llf",
+	}
+
+	args, workDir, ok := buildRsyncUploadArgsRelativeToCommonDir(spec, `C:\flyssh\flyssh.exe`)
+	if !ok {
+		t.Fatal("expected relative retry args")
+	}
+	if workDir != `D:\Deploy_部署\BPM v1.1` {
+		t.Fatalf("unexpected work dir: %q", workDir)
+	}
+	want := []string{
+		"-e", `'C:\flyssh\flyssh.exe' '--internal-rsync-transport'`,
+		"-avh",
+		"./bpm-model.jar",
+		"./bpm-runtime.jar",
+		"flyssh:/tmp/llf",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("unexpected relative args:\n got: %#v\nwant: %#v", args, want)
+	}
+}
+
+func TestBuildRsyncUploadArgsRelativeToCommonDirRejectsMixedParents(t *testing.T) {
+	spec := &Spec{
+		Mode:      ModeRsync,
+		Direction: DirectionUpload,
+		Flags:     []string{"-avh"},
+		Sources: []string{
+			`D:\Deploy_部署\a.jar`,
+			`E:\Deploy_部署\b.jar`,
+		},
+		Target: "/tmp/llf",
+	}
+	if _, _, ok := buildRsyncUploadArgsRelativeToCommonDir(spec, `C:\flyssh\flyssh.exe`); ok {
+		t.Fatal("mixed Windows source parents should not use relative retry")
+	}
+}
+
+func TestBuildRsyncFilesFromArgs(t *testing.T) {
+	spec := &Spec{
+		Mode:      ModeRsync,
+		Direction: DirectionUpload,
+		Flags:     []string{"-a", "-v", "-h"},
 		Sources:   []string{`D:\Deploy_部署\BPM v1.1\bpm-model.jar`},
 		Target:    "/tmp/llf",
 	}
-
-	native := buildRsyncCommandArgsWithLocalPathMode(spec, `C:\flyssh\flyssh.exe`, `C:\cygwin64\bin\rsync.exe`, rsyncLocalPathNative)
-	wantNative := []string{
+	got := buildRsyncFilesFromArgs(spec, `C:\flyssh\flyssh.exe`)
+	want := []string{
 		"-e", `'C:\flyssh\flyssh.exe' '--internal-rsync-transport'`,
-		"-avh",
-		`D:\Deploy_部署\BPM v1.1\bpm-model.jar`,
+		"-a", "-v", "-h", "-r",
+		"--from0", "--files-from=-", ".",
 		"flyssh:/tmp/llf",
 	}
-	if !reflect.DeepEqual(native, wantNative) {
-		t.Fatalf("unexpected native args:\n got: %#v\nwant: %#v", native, wantNative)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected files-from args:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestEnsureRecursiveFlag(t *testing.T) {
+	tests := []struct {
+		name  string
+		flags []string
+		want  []string
+	}{
+		{name: "archive adds recursive", flags: []string{"-a", "-v"}, want: []string{"-a", "-v", "-r"}},
+		{name: "archive long adds recursive", flags: []string{"--archive"}, want: []string{"--archive", "-r"}},
+		{name: "existing recursive", flags: []string{"-a", "-r"}, want: []string{"-a", "-r"}},
+		{name: "existing recursive long", flags: []string{"--archive", "--recursive"}, want: []string{"--archive", "--recursive"}},
+		{name: "no recursive wins", flags: []string{"-a", "--no-recursive"}, want: []string{"-a", "--no-recursive"}},
+		{name: "no archive", flags: []string{"-v", "-h"}, want: []string{"-v", "-h"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ensureRecursiveFlag(tt.flags)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("unexpected flags: got %#v want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasDeleteFlag(t *testing.T) {
+	for _, flag := range []string{"--delete", "--delete-before", "--delete-during", "--delete-delay", "--delete-after", "--delete-excluded", "--del"} {
+		t.Run(flag, func(t *testing.T) {
+			if !hasDeleteFlag([]string{"-a", flag}) {
+				t.Fatalf("expected %s to be treated as delete flag", flag)
+			}
+		})
+	}
+	if hasDeleteFlag([]string{"-a", "--max-delete", "10"}) {
+		t.Fatal("--max-delete alone should not trigger grouped retry delete guard")
+	}
+	if hasDeleteFlag([]string{"-a", "--force"}) {
+		t.Fatal("--force without a delete flag should not trigger grouped retry delete guard")
+	}
+}
+
+func TestGroupSourcesByWindowsDir(t *testing.T) {
+	groups, ok := groupSourcesByWindowsDir([]string{
+		`D:\Deploy_部署\BPM v1.1\bpm-model.jar`,
+		`D:\Deploy_部署\BPM v1.1\-foo.jar`,
+		`E:\Other 路径\dir`,
+		`D:\Deploy_部署\BPM v1.1\subdir\`,
+	})
+	if !ok {
+		t.Fatal("expected Windows sources to group")
+	}
+	// Same normalized directory should reuse its first group, preserving source order
+	// inside that group and preserving first-seen group ordering overall.
+	want := []rsyncSourceGroup{
+		{Dir: `D:\Deploy_部署\BPM v1.1`, Names: []string{"bpm-model.jar", "-foo.jar", "subdir"}},
+		{Dir: `E:\Other 路径`, Names: []string{"dir"}},
+	}
+	if !reflect.DeepEqual(groups, want) {
+		t.Fatalf("unexpected groups:\n got: %#v\nwant: %#v", groups, want)
 	}
 
+	if _, ok := groupSourcesByWindowsDir([]string{`D:\ok\a.jar`, `/tmp/b.jar`}); ok {
+		t.Fatal("mixed Windows/POSIX sources should not group")
+	}
+}
+
+func TestRsyncFilesFromGroupedRetrySkipsDeleteFlags(t *testing.T) {
+	spec := &Spec{
+		Mode:      ModeRsync,
+		Direction: DirectionUpload,
+		Flags:     []string{"-a", "--delete"},
+		Sources: []string{
+			`D:\Deploy_部署\a.jar`,
+			`E:\Other\b.jar`,
+		},
+		Target: "/tmp/llf",
+	}
+	if _, ok := runRsyncFilesFromGroupedRetry(&cli.Options{}, spec, `C:\flyssh\flyssh.exe`, `C:\cygwin64\bin\rsync.exe`, "", nil); ok {
+		t.Fatal("grouped files-from retry should be skipped for delete flags")
+	}
+}
+
+func TestRsyncFilesFromInputUsesNULSeparatedNames(t *testing.T) {
+	input := rsyncFilesFromInput(rsyncSourceGroup{
+		Dir:   `D:\Deploy_部署\BPM v1.1`,
+		Names: []string{"bpm model.jar", "-foo.jar", "目录"},
+	})
+	data, err := io.ReadAll(input)
+	if err != nil {
+		t.Fatalf("read files-from input: %v", err)
+	}
+	want := "bpm model.jar\x00-foo.jar\x00目录\x00"
+	if string(data) != want {
+		t.Fatalf("unexpected files-from input: got %q want %q", string(data), want)
+	}
 }
 
 func TestShouldRetryRsyncWithAlternateWindowsPaths(t *testing.T) {
