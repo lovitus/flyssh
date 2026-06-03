@@ -1,25 +1,25 @@
 {
-  "version": "2.0.5",
+  "version": "2.0.6",
   "description": "Portable SSH client with SOCKS, multi-hop, transfer GUI, gateway, and mosh.",
   "homepage": "https://github.com/lovitus/flyssh",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/lovitus/flyssh/releases/download/v2.0.5/flyssh-2.0.5-windows-amd64.exe.zip",
-      "hash": "648ab19fe656702994b922853f47f84318a4a898d896f5b1683b0fdd345e2cb1",
+      "url": "https://github.com/lovitus/flyssh/releases/download/v2.0.6/flyssh-2.0.6-windows-amd64.exe.zip",
+      "hash": "5a6af66a126c7203ba14bec01b70d5b9d03cd8c4f22282da8d0af6fd9be5f002",
       "bin": [
         [
-          "flyssh-2.0.5-windows-amd64.exe",
+          "flyssh-2.0.6-windows-amd64.exe",
           "flyssh"
         ]
       ]
     },
     "arm64": {
-      "url": "https://github.com/lovitus/flyssh/releases/download/v2.0.5/flyssh-2.0.5-windows-arm64.exe.zip",
-      "hash": "75399b41426b9672007a0b05e1e6b9705aafcb1d3d8921b68ebcd6dafe8242dd",
+      "url": "https://github.com/lovitus/flyssh/releases/download/v2.0.6/flyssh-2.0.6-windows-arm64.exe.zip",
+      "hash": "6ff964f1373a70b391b46ef020a2925b1c7de4a5bf9fdd572a8039355ba0689b",
       "bin": [
         [
-          "flyssh-2.0.5-windows-arm64.exe",
+          "flyssh-2.0.6-windows-arm64.exe",
           "flyssh"
         ]
       ]
