@@ -1,5 +1,19 @@
 # Changelog / 更新日志
 
+## v2.0.6 (2026-06-03)
+
+### Fixes / 修复
+
+- **Keep internal rsync transport connections alive during large uploads** — the `--internal-rsync-transport` path now sends SSH keepalives across the active chain while rsync is running, using configured `ServerAliveInterval` when present and a conservative 30 second default otherwise. This targets large rsync uploads that can be reset by proxies, firewalls, or jump hosts after a few minutes of one-way transfer traffic / 修复大文件 rsync 上传期间 internal transport 连接可能被中间代理、防火墙或跳板重置的问题：`--internal-rsync-transport` 现在会在 rsync 运行期间对整条 SSH 链路发送 keepalive；若已配置 `ServerAliveInterval` 则使用该配置，否则使用保守的 30 秒默认值。
+
+### Verification / 验证
+
+- `git diff --check`
+- `go test ./pkg/transfer`
+- `go test ./...`
+
+---
+
 ## v2.0.5 (2026-05-29)
 
 ### Fixes / 修复

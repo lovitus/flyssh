@@ -429,12 +429,24 @@ func runInternalRsyncTransport(args []string) int {
 		return 255
 	}
 
-	_, allClients, finalClient, err := connectChain(opts)
+	sshConfig, allClients, finalClient, err := connectChain(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
 		return 255
 	}
 	defer closeClients(allClients)
+
+	// Keep the SSH chain alive during large-file transfers; proxies/firewalls
+	// may reset idle channels after ~150 s if no application-layer traffic flows.
+	stopKeepalive := make(chan struct{})
+	interval := time.Duration(sshConfig.ServerAliveInterval) * time.Second
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	for _, c := range allClients {
+		go keepAliveUntil(c, interval, sshConfig.ServerAliveCountMax, stopKeepalive)
+	}
+	defer close(stopKeepalive)
 
 	session, err := finalClient.NewSession()
 	if err != nil {
