@@ -173,3 +173,29 @@ func TestApplyOption_CiphersAndMACsOverrideShortFlags(t *testing.T) {
 		t.Fatalf("expected -o MACs to override -m, got %#v", cfg.MACs)
 	}
 }
+
+func TestServerAliveIntervalSetTracksExplicitZero(t *testing.T) {
+	cfgFile := writeSSHConfig(t, `
+Host myhost
+    ServerAliveInterval 0
+`)
+
+	opts := &cli.Options{
+		Host:       "myhost",
+		ConfigFile: cfgFile,
+	}
+	cfg := LoadSSHConfig(opts)
+
+	if cfg.ServerAliveInterval != 0 {
+		t.Fatalf("expected explicit zero ServerAliveInterval, got %d", cfg.ServerAliveInterval)
+	}
+	if !cfg.ServerAliveIntervalSet {
+		t.Fatal("expected ServerAliveIntervalSet for explicit zero")
+	}
+
+	opts.SSHOptions = map[string]string{"ServerAliveInterval": "60"}
+	cfg = LoadSSHConfig(opts)
+	if cfg.ServerAliveInterval != 60 || !cfg.ServerAliveIntervalSet {
+		t.Fatalf("expected CLI override ServerAliveInterval=60 set, got interval=%d set=%v", cfg.ServerAliveInterval, cfg.ServerAliveIntervalSet)
+	}
+}

@@ -99,6 +99,29 @@ func TestBuildConnectionPlanAppliesPerHopCredentialsWithoutMutatingOptions(t *te
 	}
 }
 
+func TestKeepAliveInterval(t *testing.T) {
+	interval, warn := keepAliveInterval(&config.ResolvedConfig{})
+	if interval != 30*time.Second || warn {
+		t.Fatalf("unexpected default keepalive interval: interval=%v warn=%v", interval, warn)
+	}
+
+	interval, warn = keepAliveInterval(&config.ResolvedConfig{
+		ServerAliveInterval:    0,
+		ServerAliveIntervalSet: true,
+	})
+	if interval != 30*time.Second || !warn {
+		t.Fatalf("unexpected explicit zero keepalive interval: interval=%v warn=%v", interval, warn)
+	}
+
+	interval, warn = keepAliveInterval(&config.ResolvedConfig{
+		ServerAliveInterval:    60,
+		ServerAliveIntervalSet: true,
+	})
+	if interval != 60*time.Second || warn {
+		t.Fatalf("unexpected configured keepalive interval: interval=%v warn=%v", interval, warn)
+	}
+}
+
 func TestBuildConnectionPlanPasswordAssignments(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -171,12 +194,12 @@ func TestBuildConnectionPlanPasswordAssignments(t *testing.T) {
 func TestResolveHopSSHConfigAppliesPerHopSSHOptions(t *testing.T) {
 	knownHostsFile := t.TempDir() + "/known_hosts"
 	opts := &cli.Options{
-		ConfigFile:   "/nonexistent",
+		ConfigFile:    "/nonexistent",
 		IdentityFiles: []string{"global-key"},
 		SSHOptions: map[string]string{
 			"StrictHostKeyChecking": "no",
-			"UserKnownHostsFile":   knownHostsFile,
-			"ConnectTimeout":       "7",
+			"UserKnownHostsFile":    knownHostsFile,
+			"ConnectTimeout":        "7",
 		},
 		KeysCSV: "first-hop-key,second-hop-key",
 	}
@@ -213,9 +236,9 @@ func TestResolveHopSSHConfigAppliesPerHopSSHOptions(t *testing.T) {
 
 func TestResolveHopSSHConfigDoesNotLeakFirstHopKeyFromKeysCSV(t *testing.T) {
 	opts := &cli.Options{
-		ConfigFile:   "/nonexistent",
+		ConfigFile:    "/nonexistent",
 		IdentityFiles: []string{"first-hop-key"},
-		KeysCSV:      "first-hop-key,",
+		KeysCSV:       "first-hop-key,",
 	}
 
 	hopCfg := resolveHopSSHConfig(opts, cli.HopSpec{

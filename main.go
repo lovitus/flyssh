@@ -26,7 +26,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "1.0.43"
+var Version = "2.0.7"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
@@ -296,11 +296,12 @@ func runOnce(opts *cli.Options) (int, error) {
 
 	// Start keepalive on all clients in the chain
 	stopKeepalive := make(chan struct{})
-	if sshConfig.ServerAliveInterval > 0 {
-		interval := time.Duration(sshConfig.ServerAliveInterval) * time.Second
-		for _, c := range allClients {
-			go keepAliveUntil(c, interval, sshConfig.ServerAliveCountMax, stopKeepalive)
-		}
+	interval, warnKeepaliveDefault := keepAliveInterval(sshConfig)
+	if warnKeepaliveDefault {
+		fmt.Fprintln(os.Stderr, "flyssh: ServerAliveInterval=0 requested; keepalive remains enabled with default 30s")
+	}
+	for _, c := range allClients {
+		go keepAliveUntil(c, interval, sshConfig.ServerAliveCountMax, stopKeepalive)
 	}
 	defer close(stopKeepalive)
 
@@ -439,9 +440,9 @@ func runInternalRsyncTransport(args []string) int {
 	// Keep the SSH chain alive during large-file transfers; proxies/firewalls
 	// may reset idle channels after ~150 s if no application-layer traffic flows.
 	stopKeepalive := make(chan struct{})
-	interval := time.Duration(sshConfig.ServerAliveInterval) * time.Second
-	if interval <= 0 {
-		interval = 30 * time.Second
+	interval, warnKeepaliveDefault := keepAliveInterval(sshConfig)
+	if warnKeepaliveDefault {
+		fmt.Fprintln(os.Stderr, "flyssh: ServerAliveInterval=0 requested; keepalive remains enabled with default 30s")
 	}
 	for _, c := range allClients {
 		go keepAliveUntil(c, interval, sshConfig.ServerAliveCountMax, stopKeepalive)
@@ -498,7 +499,7 @@ func keepAliveUntil(client *ssh.Client, interval time.Duration, maxCount int, st
 		case <-stop:
 			return
 		case <-ticker.C:
-			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			_, _, err := client.SendRequest("keepalive@openssh.com", false, nil)
 			if err != nil {
 				misses++
 				if maxCount > 0 && misses >= maxCount {
@@ -510,6 +511,13 @@ func keepAliveUntil(client *ssh.Client, interval time.Duration, maxCount int, st
 			}
 		}
 	}
+}
+
+func keepAliveInterval(sshConfig *config.ResolvedConfig) (time.Duration, bool) {
+	if sshConfig.ServerAliveInterval > 0 {
+		return time.Duration(sshConfig.ServerAliveInterval) * time.Second, false
+	}
+	return 30 * time.Second, sshConfig.ServerAliveIntervalSet
 }
 
 // connectFirstHost establishes the SSH connection to the first host

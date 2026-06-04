@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v2.0.7 (2026-06-04)
+
+### Fixes / 修复
+
+- **Enable default SSH keepalive across long-running modes** — FlySSH now sends SSH keepalive traffic by default every 30 seconds across normal sessions, SCP, rsync, and `--ssh-gateway`, reducing disconnects caused by proxies, firewalls, or jump hosts around the 140 second idle/one-way traffic mark / 在长时间运行模式中默认启用 SSH 保活：FlySSH 现在默认每 30 秒在普通会话、SCP、rsync 和 `--ssh-gateway` 链路上发送 SSH keepalive，减少代理、防火墙或跳板机在约 140 秒空闲/单向流量后断开连接的问题。
+- **Track explicit `ServerAliveInterval` configuration** — `ServerAliveInterval` values from SSH config or `-o` are now tracked even when set to `0`; FlySSH still keeps the practical 30 second default enabled and prints a warning when an explicit zero is requested / 跟踪显式配置的 `ServerAliveInterval`：来自 SSH config 或 `-o` 的值即使为 `0` 也会被识别；FlySSH 仍保留实用的 30 秒默认保活，并在用户显式设置 `0` 时输出提示。
+- **Use non-blocking keepalive requests** — keepalive requests no longer wait for a server reply, focusing on keeping the route active without treating servers that ignore OpenSSH keepalive global requests as failed / 使用不等待响应的 keepalive 请求：保活请求不再等待服务端回复，重点保持链路活跃，避免把忽略 OpenSSH keepalive global request 的服务端误判为失败。
+
+### Verification / 验证
+
+- `git diff --check`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-keepalive-check.exe .`
+
+---
+
 ## v2.0.6 (2026-06-03)
 
 ### Fixes / 修复

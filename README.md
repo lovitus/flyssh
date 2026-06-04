@@ -177,7 +177,7 @@ Live transfer validation notes for the current implementation are recorded in [V
 | SSH Agent | `-A` | Agent forwarding / 代理转发 |
 | ProxyJump | `-J` | Standard jump host / 标准跳板机 |
 | SSH Config | `-F` | Reads `~/.ssh/config` / 读取 SSH 配置 |
-| Keepalive / 保活 | `-o ServerAliveInterval=N` | Periodic keepalive / 定期保活 |
+| Keepalive / 保活 | `-o ServerAliveInterval=N` | Default 30s keepalive, configurable / 默认 30 秒保活，可配置 |
 | Stdio forward / 标准流转发 | `-W host:port` | Forward stdin/stdout / 转发标准输入输出 |
 | Compression / 压缩 | `-C` | Enable compression / 启用压缩 |
 | Rsync upload / 上传 | `--rsync-upload '...'` | Managed rsync upload on current route / 使用当前链路执行 rsync 上传 |
@@ -596,6 +596,10 @@ Host myserver
 ```bash
 flyssh --socks 127.0.0.1:1080 myserver
 ```
+
+FlySsh enables a practical 30 second SSH keepalive by default to keep long-running shells, SCP/rsync transfers, and SSH gateway sessions alive across proxies, firewalls, and jump hosts.  `ServerAliveInterval N` overrides the interval; `ServerAliveInterval 0` is accepted but FlySsh keeps the 30 second default and prints a warning.
+
+FlySsh 默认启用实用的 30 秒 SSH 保活，用于让长时间 shell、SCP/rsync 传输和 SSH gateway 会话在代理、防火墙、跳板机链路上保持活跃。`ServerAliveInterval N` 可覆盖间隔；`ServerAliveInterval 0` 会被接受，但 FlySsh 仍保留 30 秒默认保活并输出提示。
 
 ---
 

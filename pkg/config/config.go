@@ -14,19 +14,20 @@ import (
 
 // ResolvedConfig is the final resolved SSH configuration for a connection.
 type ResolvedConfig struct {
-	User                  string
-	Hostname              string
-	Port                  int
-	IdentityFiles         []string
-	ConnectTimeout        time.Duration
-	ProxyJump             string
-	ProxyCommand          string
-	SendEnv               []string
-	ForwardAgent          bool
-	Compression           bool
-	ServerAliveInterval   int
-	ServerAliveCountMax   int
-	StrictHostKeyChecking string
+	User                   string
+	Hostname               string
+	Port                   int
+	IdentityFiles          []string
+	ConnectTimeout         time.Duration
+	ProxyJump              string
+	ProxyCommand           string
+	SendEnv                []string
+	ForwardAgent           bool
+	Compression            bool
+	ServerAliveInterval    int
+	ServerAliveIntervalSet bool
+	ServerAliveCountMax    int
+	StrictHostKeyChecking  string
 
 	// SOCKS5 proxy settings
 	SocksProxy    string
@@ -43,23 +44,24 @@ type ResolvedConfig struct {
 
 // SSHConfigEntry represents a parsed Host block from ssh config
 type SSHConfigEntry struct {
-	Patterns              []string
-	Hostname              string
-	User                  string
-	Port                  int
-	IdentityFiles         []string
-	ProxyJump             string
-	ProxyCommand          string
-	ForwardAgent          string
-	Compression           string
-	ConnectTimeout        int
-	ServerAliveInterval   int
-	ServerAliveCountMax   int
-	StrictHostKeyChecking string
-	SendEnv               []string
-	KnownHostsFile        string
-	Ciphers               string
-	MACs                  string
+	Patterns               []string
+	Hostname               string
+	User                   string
+	Port                   int
+	IdentityFiles          []string
+	ProxyJump              string
+	ProxyCommand           string
+	ForwardAgent           string
+	Compression            string
+	ConnectTimeout         int
+	ServerAliveInterval    int
+	ServerAliveIntervalSet bool
+	ServerAliveCountMax    int
+	StrictHostKeyChecking  string
+	SendEnv                []string
+	KnownHostsFile         string
+	Ciphers                string
+	MACs                   string
 }
 
 // LoadSSHConfig resolves the final configuration from CLI options and ssh config file
@@ -194,8 +196,9 @@ func applyEntry(cfg *ResolvedConfig, e *SSHConfigEntry) {
 	if e.ConnectTimeout > 0 {
 		cfg.ConnectTimeout = time.Duration(e.ConnectTimeout) * time.Second
 	}
-	if e.ServerAliveInterval > 0 {
+	if e.ServerAliveIntervalSet {
 		cfg.ServerAliveInterval = e.ServerAliveInterval
+		cfg.ServerAliveIntervalSet = true
 	}
 	if e.ServerAliveCountMax > 0 {
 		cfg.ServerAliveCountMax = e.ServerAliveCountMax
@@ -243,6 +246,7 @@ func applyOption(cfg *ResolvedConfig, key, value string) {
 	case "serveraliveinterval":
 		if t, err := strconv.Atoi(value); err == nil {
 			cfg.ServerAliveInterval = t
+			cfg.ServerAliveIntervalSet = true
 		}
 	case "serveralivecountmax":
 		if t, err := strconv.Atoi(value); err == nil {
@@ -332,6 +336,7 @@ func parseSSHConfig(path string) ([]SSHConfigEntry, error) {
 		case "serveraliveinterval":
 			if t, err := strconv.Atoi(value); err == nil {
 				current.ServerAliveInterval = t
+				current.ServerAliveIntervalSet = true
 			}
 		case "serveralivecountmax":
 			if t, err := strconv.Atoi(value); err == nil {
