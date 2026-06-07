@@ -3,7 +3,7 @@ module github.com/flyssh/flyssh
 go 1.26.0
 
 require (
-	github.com/lovitus/mosh-go v0.5.2-flyssh.9
+	github.com/lovitus/mosh-go v0.5.2-flyssh.10
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
 	golang.org/x/crypto v0.48.0
 	golang.org/x/sys v0.42.0
