@@ -1,5 +1,18 @@
 # Changelog / 更新日志
 
+## v2.0.8 (2026-06-07)
+
+### Fixes / 修复
+
+- **Fix long-running `--mosh` client memory growth** — FlySSH now depends on `github.com/lovitus/mosh-go v0.5.2-flyssh.10`, which compacts acknowledged client input actions and reuses cached compressed pending diffs to avoid repeated zlib/flate allocations during long sessions / 修复长时间 `--mosh` 会话中的客户端内存增长问题：FlySSH 现在依赖 `github.com/lovitus/mosh-go v0.5.2-flyssh.10`，该版本会裁剪已确认的客户端输入 action，并复用 pending diff 的压缩结果，避免长会话中反复进行 zlib/flate 分配。
+
+### Verification / 验证
+
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/flyssh-mosh-oom-fix.exe .`
+
+---
+
 ## v2.0.7 (2026-06-04)
 
 ### Fixes / 修复
