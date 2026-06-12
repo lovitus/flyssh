@@ -26,7 +26,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-var Version = "2.0.7"
+var Version = "2.0.9"
 
 // scrubArgs overwrites sensitive values in os.Args so they won't appear in
 // /proc/self/cmdline on Linux or Get-Process output on Windows.
@@ -316,24 +316,25 @@ func runOnce(opts *cli.Options) (int, error) {
 	}
 
 	// Start port forwarding (all on finalClient)
+	forwardErrCh := make(chan error, len(opts.LocalForwards)+len(opts.RemoteForwards)+len(opts.DynamicForwards))
 	for _, lf := range opts.LocalForwards {
 		go func(spec string) {
 			if err := forwarding.StartLocalForward(finalClient, spec, opts.Verbose); err != nil {
-				log.Printf("Local forward error (%s): %v", spec, err)
+				reportForwardError(forwardErrCh, "local", spec, err)
 			}
 		}(lf)
 	}
 	for _, rf := range opts.RemoteForwards {
 		go func(spec string) {
 			if err := forwarding.StartRemoteForward(finalClient, spec, opts.Verbose); err != nil {
-				log.Printf("Remote forward error (%s): %v", spec, err)
+				reportForwardError(forwardErrCh, "remote", spec, err)
 			}
 		}(rf)
 	}
 	for _, dp := range opts.DynamicForwards {
 		go func(spec string) {
 			if err := forwarding.StartDynamicForward(finalClient, spec, opts.Verbose); err != nil {
-				log.Printf("Dynamic forward error (%s): %v", spec, err)
+				reportForwardError(forwardErrCh, "dynamic", spec, err)
 			}
 		}(dp)
 	}
@@ -357,11 +358,15 @@ func runOnce(opts *cli.Options) (int, error) {
 		if opts.Verbose {
 			log.Printf("No command mode (-N), forwarding only")
 		}
-		err := allClients[0].Wait()
-		if err != nil {
-			return 255, fmt.Errorf("connection closed: %w", err)
+		select {
+		case err := <-waitAnyClient(allClients):
+			if err != nil {
+				return 255, fmt.Errorf("connection closed: %w", err)
+			}
+			return 0, nil
+		case err := <-forwardErrCh:
+			return 255, err
 		}
-		return 0, nil
 	}
 
 	// Run interactive shell or command
@@ -518,6 +523,28 @@ func keepAliveInterval(sshConfig *config.ResolvedConfig) (time.Duration, bool) {
 		return time.Duration(sshConfig.ServerAliveInterval) * time.Second, false
 	}
 	return 30 * time.Second, sshConfig.ServerAliveIntervalSet
+}
+
+func reportForwardError(ch chan<- error, kind, spec string, err error) {
+	if err == nil {
+		return
+	}
+	wrapped := fmt.Errorf("%s forward error (%s): %w", kind, spec, err)
+	log.Print(wrapped)
+	select {
+	case ch <- wrapped:
+	default:
+	}
+}
+
+func waitAnyClient(clients []*ssh.Client) <-chan error {
+	ch := make(chan error, len(clients))
+	for _, client := range clients {
+		go func(c *ssh.Client) {
+			ch <- c.Wait()
+		}(client)
+	}
+	return ch
 }
 
 // connectFirstHost establishes the SSH connection to the first host

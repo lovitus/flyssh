@@ -7,6 +7,7 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,6 +120,46 @@ func TestKeepAliveInterval(t *testing.T) {
 	})
 	if interval != 60*time.Second || warn {
 		t.Fatalf("unexpected configured keepalive interval: interval=%v warn=%v", interval, warn)
+	}
+}
+
+func TestRunOnceNoCommandReturnsRemoteForwardListenError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	sshSrv := testkit.StartSSHServer(t, map[string]string{"u1": "p1"})
+	host, portStr, err := net.SplitHostPort(sshSrv.Addr)
+	if err != nil {
+		t.Fatalf("split ssh addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen occupied remote port: %v", err)
+	}
+	defer occupied.Close()
+	_, remotePort, err := net.SplitHostPort(occupied.Addr().String())
+	if err != nil {
+		t.Fatalf("split occupied addr: %v", err)
+	}
+
+	opts := &cli.Options{
+		Host:           host,
+		Port:           port,
+		User:           "u1",
+		Password:       "p1",
+		ConfigFile:     "/nonexistent",
+		NoCommand:      true,
+		RemoteForwards: []string{fmt.Sprintf("127.0.0.1:%s:127.0.0.1:1", remotePort)},
+		SSHOptions:     map[string]string{"StrictHostKeyChecking": "no"},
+	}
+
+	code, err := runOnce(opts)
+	if code != 255 || err == nil {
+		t.Fatalf("expected remote forward listen failure, got code=%d err=%v", code, err)
+	}
+	if !strings.Contains(err.Error(), "remote forward error") || !strings.Contains(err.Error(), remotePort) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

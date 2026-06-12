@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v2.0.9 (2026-06-12)
+
+### Fixes / 修复
+
+- **Recover from remote forward registration failures in `-N` mode** — Forwarding-only sessions now propagate local, remote, and dynamic forward errors back to the main connection loop instead of only logging them. This lets `-rtcp` / remote forwarding fail fast and enter the existing reconnect path when the remote listen port is still occupied by a stale server-side SSH process after an abnormal network break / 修复 `-N` forwarding-only 模式下远端转发注册失败后只写日志、不触发重连的问题：现在 local、remote、dynamic forward 的错误会返回到主连接循环。遇到异常断网后远端旧 `sshd` 仍占用 `-rtcp` 端口时，FlySSH 会明确失败并进入已有重连流程。
+- **Watch all SSH clients during forwarding-only sessions** — `-N` mode now exits when any hop in the active SSH chain closes, not only when the first client reports closure / forwarding-only 会话现在会监听整条 SSH 链中的任意 client 关闭，而不是只等待第一个 client。
+
+### Verification / 验证
+
+- `git diff --check`
+- `go test ./...`
+- `go test -race ./...`
+- `GOOS=windows GOARCH=amd64 go build .`
+
+---
+
 ## v2.0.8 (2026-06-07)
 
 ### Fixes / 修复
