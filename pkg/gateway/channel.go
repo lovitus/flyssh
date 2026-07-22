@@ -88,7 +88,13 @@ func handleSession(newCh ssh.NewChannel, upstream *ssh.Client, verbose bool) {
 	// required for clients such as rsync that hold their write side open
 	// until they see the server's CLOSE message.
 	go func() {
-		io.Copy(downCh, upCh)
+		_, err := io.Copy(downCh, upCh)
+		if err != nil {
+			// A failed downstream write means the client is gone, rather than
+			// merely finished sending stdin. Close upstream to avoid leaving
+			// the remote command behind.
+			upCh.Close()
+		}
 		upReqWg.Wait()
 		downCh.Close()
 		close(done)
@@ -99,7 +105,6 @@ func handleSession(newCh ssh.NewChannel, upstream *ssh.Client, verbose bool) {
 	go func() {
 		io.Copy(upCh, downCh)
 		upCh.CloseWrite()
-		upCh.Close()
 	}()
 
 	<-done

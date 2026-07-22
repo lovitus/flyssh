@@ -1,6 +1,7 @@
 package forwarding
 
 import (
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -80,6 +81,7 @@ func (ic *idleConn) watchdog() {
 		case <-ticker.C:
 			last := time.Unix(0, ic.lastActive.Load())
 			if time.Since(last) > ic.timeout {
+				log.Printf("flyssh: idle forwarding connection closed after %s", ic.timeout)
 				ic.Conn.Close()
 				return
 			}
