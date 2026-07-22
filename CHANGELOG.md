@@ -1,5 +1,26 @@
 # Changelog / 更新日志
 
+## v2.0.10 (2026-07-22)
+
+### Features / 新功能
+
+- **Add configurable forwarding relay policy** — Port forwarding now supports global `--relay=auto|disable|prefer` selection and per-entry `?relay=...` overrides for easy-forward syntax. Existing local and dynamic forwarding keep their default direct-then-relay order / 新增可配置的转发中继策略：端口转发现在支持全局 `--relay=auto|disable|prefer`，easy-forward 语法也支持单条 `?relay=...` 覆盖；本地和动态转发继续保持默认的 direct-then-relay 顺序。
+- **Add mux relay fallback for remote forwarding** — When sshd explicitly denies `tcpip-forward`, the default `auto` policy can create the remote listener through the embedded mux relay. `--relay=disable` retains strict sshd-only behavior / 为远程转发增加 mux relay 兜底：当 sshd 明确拒绝 `tcpip-forward` 时，默认 `auto` 策略可通过内嵌 mux relay 创建远端监听；`--relay=disable` 可保持严格的仅 sshd 行为。
+
+### Fixes / 修复
+
+- **Preserve gateway command output after stdin EOF** — The SSH gateway now half-closes only the upstream write side when a downstream client finishes stdin, allowing stdout, stderr, and exit status to drain normally / 修复 gateway 在 downstream stdin EOF 后过早关闭整个上游 channel、导致命令输出丢失的问题：现在只半关闭上游写端，stdout、stderr 和退出状态可正常返回。
+- **Report forwarding idle-timeout closures** — When the existing five-minute forwarding idle watchdog closes a connection, FlySSH now logs the exact reason and timeout to distinguish local cleanup from upstream network disconnects / 转发连接被现有五分钟 idle watchdog 关闭时，现在会明确记录原因和超时，便于区分本地清理与上游网络断开。
+
+### Verification / 验证
+
+- `go test ./...`
+- `go test -race ./...`
+- `go test ./... -count=5`
+- Windows, Linux, and macOS cross-builds
+
+---
+
 ## v2.0.9 (2026-06-12)
 
 ### Fixes / 修复
