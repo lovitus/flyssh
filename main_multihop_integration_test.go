@@ -150,7 +150,7 @@ func TestRunOnceNoCommandReturnsRemoteForwardListenError(t *testing.T) {
 		Password:       "p1",
 		ConfigFile:     "/nonexistent",
 		NoCommand:      true,
-		RemoteForwards: []string{fmt.Sprintf("127.0.0.1:%s:127.0.0.1:1", remotePort)},
+		RemoteForwards: []cli.ForwardSpec{{Spec: fmt.Sprintf("127.0.0.1:%s:127.0.0.1:1", remotePort), RelayPolicy: cli.RelayPolicyAuto}},
 		SSHOptions:     map[string]string{"StrictHostKeyChecking": "no"},
 	}
 

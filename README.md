@@ -282,6 +282,10 @@ flyssh user@host -ltcp://:8080/remote:80
 flyssh user@host -rtcp://:9090/localhost:3000
 flyssh user@host -dynamicproxy://1081
 
+# Relay policy / 中继策略
+flyssh user@host --relay=prefer -ltcp://:8080/remote:80
+flyssh user@host -rtcp://:9090/localhost:3000?relay=disable
+
 # Multiple forwards in one flag / 一个参数多组转发
 flyssh user@host -ltcp://:8080/remote:80,:2222/internal:22,:3306/db:3306
 
@@ -529,6 +533,10 @@ The mux relay is uploaded automatically when needed (hash-based caching — only
 
 复用中继在需要时自动上传（基于哈希缓存——每个版本只上传一次）。它以复用模式运行：单个 SSH exec 会话通过二进制帧处理所有转发连接。
 
+Relay policy can be controlled globally with `--relay=auto|disable|prefer`, or per easy-forward entry with `?relay=auto|disable|prefer`. `auto` is the default. For `-L/-D/-ltcp/-dynamicproxy`, `auto` keeps the existing order: direct SSH forwarding, then mux relay, then exec fallback. For `-R/-rtcp`, `auto` tries sshd `tcpip-forward` first and only falls back to mux reverse-listen when sshd explicitly rejects remote forwarding. `disable` uses only official sshd forwarding. `prefer` tries relay first, then official sshd forwarding where applicable.
+
+可以用全局 `--relay=auto|disable|prefer` 控制中继策略，也可以在单条 easy forwarding 后追加 `?relay=auto|disable|prefer`。`auto` 是默认值。`-L/-D/-ltcp/-dynamicproxy` 的 `auto` 保持原顺序：官方 SSH 转发、mux relay、exec fallback。`-R/-rtcp` 的 `auto` 先走 sshd `tcpip-forward`，只有 sshd 明确拒绝远程转发时才切到 mux reverse-listen。`disable` 只使用官方 sshd 转发；`prefer` 优先 relay，再按需要回退官方 sshd 转发。
+
 ### Supported Relay Platforms / 中继支持的平台
 
 | Platform / 平台 | Embedded / 内嵌 |
@@ -668,6 +676,9 @@ SSH Options (OpenSSH compatible):
   -p port         Port (default: 22) / 端口
   -q              Quiet mode / 静默模式
   -R spec         Remote port forwarding / 远程端口转发
+  --relay mode    Port forwarding relay policy: auto|disable|prefer / 转发中继策略
+  --disable-relay Disable relay fallback for port forwarding / 禁用转发中继
+  --prefer-relay  Prefer relay for port forwarding / 优先使用转发中继
   -s              Subsystem / 子系统
   -T              Disable PTY / 禁用伪终端
   -t              Force PTY / 强制伪终端
@@ -697,9 +708,9 @@ FlySsh Extensions:
   --mosh                  Built-in mosh-over-FlySSH terminal / 内置 mosh-over-FlySSH 终端
   --mosh-session NAME     Reattach/create named mosh session / 接回或创建固定 mosh 会话
 
-  -ltcp://spec[,spec...]  Easy local forward / 简易本地转发
-  -rtcp://spec[,spec...]  Easy remote forward / 简易远程转发
-  -dynamicproxy://port    Easy dynamic forward / 简易动态转发
+  -ltcp://spec[,spec...]  Easy local forward; supports ?relay=... / 简易本地转发
+  -rtcp://spec[,spec...]  Easy remote forward; supports ?relay=... / 简易远程转发
+  -dynamicproxy://port    Easy dynamic forward; supports ?relay=... / 简易动态转发
 
 Legacy Two-Hop:
   --secondhost user:pass@host:port

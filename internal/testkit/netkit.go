@@ -19,13 +19,22 @@ import (
 type SSHServer struct {
 	Addr string
 
-	listener net.Listener
-	config   *ssh.ServerConfig
+	listener          net.Listener
+	config            *ssh.ServerConfig
+	denyRemoteForward bool
 
 	closeOnce sync.Once
 }
 
+type SSHServerOptions struct {
+	DenyRemoteForward bool
+}
+
 func StartSSHServer(t *testing.T, users map[string]string) *SSHServer {
+	return StartSSHServerWithOptions(t, users, SSHServerOptions{})
+}
+
+func StartSSHServerWithOptions(t *testing.T, users map[string]string, opts SSHServerOptions) *SSHServer {
 	t.Helper()
 
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -54,9 +63,10 @@ func StartSSHServer(t *testing.T, users map[string]string) *SSHServer {
 	}
 
 	s := &SSHServer{
-		Addr:     ln.Addr().String(),
-		listener: ln,
-		config:   cfg,
+		Addr:              ln.Addr().String(),
+		listener:          ln,
+		config:            cfg,
+		denyRemoteForward: opts.DenyRemoteForward,
 	}
 
 	go s.acceptLoop()
@@ -89,7 +99,7 @@ func (s *SSHServer) handleConn(raw net.Conn) {
 	}
 	defer serverConn.Close()
 
-	fw := newRemoteForwardManager(serverConn)
+	fw := newRemoteForwardManager(serverConn, s.denyRemoteForward)
 	defer fw.Close()
 
 	go fw.handleGlobalRequests(reqs)
@@ -192,13 +202,15 @@ func parseExecRequest(payload []byte) string {
 type remoteForwardManager struct {
 	conn *ssh.ServerConn
 
+	deny      bool
 	mu        sync.Mutex
 	listeners map[string]net.Listener
 }
 
-func newRemoteForwardManager(conn *ssh.ServerConn) *remoteForwardManager {
+func newRemoteForwardManager(conn *ssh.ServerConn, deny bool) *remoteForwardManager {
 	return &remoteForwardManager{
 		conn:      conn,
+		deny:      deny,
 		listeners: make(map[string]net.Listener),
 	}
 }
@@ -228,6 +240,13 @@ func (m *remoteForwardManager) handleGlobalRequests(reqs <-chan *ssh.Request) {
 }
 
 func (m *remoteForwardManager) handleTCPIPForward(req *ssh.Request) {
+	if m.deny {
+		if req.WantReply {
+			_ = req.Reply(false, nil)
+		}
+		return
+	}
+
 	var p struct {
 		Addr string
 		Port uint32

@@ -1,6 +1,7 @@
 package forwarding
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -22,10 +23,13 @@ type MuxDialer struct {
 	stdin   io.WriteCloser
 	nextID  atomic.Uint32
 
-	mu      sync.Mutex
-	streams map[uint32]*muxStream
-	closed  bool
-	closeCh chan struct{}
+	mu        sync.Mutex
+	streams   map[uint32]*muxStream
+	listeners map[uint32]*muxListener
+	closed    bool
+	closeCh   chan struct{}
+	closeOnce sync.Once
+	waitCh    chan error
 }
 
 type muxStream struct {
@@ -33,10 +37,25 @@ type muxStream struct {
 	dialer    *MuxDialer
 	connectCh chan error    // CONNECT_OK (nil) or CONNECT_FAIL (error)
 	dataCh    chan []byte   // incoming DATA payloads
-	current   []byte       // partial read leftover
+	current   []byte        // partial read leftover
 	closeCh   chan struct{} // closed when stream ends
 	closeOnce sync.Once
 }
+
+type muxListener struct {
+	id       uint32
+	dialer   *MuxDialer
+	acceptCh chan net.Conn
+	readyCh  chan error
+	closeCh  chan struct{}
+	addr     net.Addr
+	closed   bool
+}
+
+type muxAddr string
+
+func (a muxAddr) Network() string { return "tcp" }
+func (a muxAddr) String() string  { return string(a) }
 
 // NewMuxDialer uploads the relay if needed, starts it in -mux mode, and
 // returns a dialer that can open unlimited TCP connections through it.
@@ -64,14 +83,20 @@ func NewMuxDialer(client *ssh.Client, relayPath string, verbose bool) (*MuxDiale
 	}
 
 	d := &MuxDialer{
-		writer:  muxproto.NewSafeWriter(stdin),
-		session: sess,
-		stdin:   stdin,
-		streams: make(map[uint32]*muxStream),
-		closeCh: make(chan struct{}),
+		writer:    muxproto.NewSafeWriter(stdin),
+		session:   sess,
+		stdin:     stdin,
+		streams:   make(map[uint32]*muxStream),
+		listeners: make(map[uint32]*muxListener),
+		closeCh:   make(chan struct{}),
+		waitCh:    make(chan error, 1),
 	}
 
 	go d.readLoop(stdout)
+	go func() {
+		d.waitCh <- sess.Wait()
+		close(d.waitCh)
+	}()
 
 	if verbose {
 		log.Printf("Mux relay started (1 SSH session for all forwarded connections)")
@@ -81,12 +106,17 @@ func NewMuxDialer(client *ssh.Client, relayPath string, verbose bool) (*MuxDiale
 
 func (d *MuxDialer) readLoop(r io.Reader) {
 	defer func() {
+		var queued []net.Conn
 		d.mu.Lock()
 		d.closed = true
 		for _, s := range d.streams {
 			s.closeLocal()
 		}
+		for _, l := range d.listeners {
+			queued = append(queued, l.closeLocalLocked()...)
+		}
 		d.mu.Unlock()
+		closeAcceptedConns(queued)
 		close(d.closeCh)
 	}()
 
@@ -99,18 +129,21 @@ func (d *MuxDialer) readLoop(r io.Reader) {
 		d.mu.Lock()
 		s := d.streams[frame.StreamID]
 		d.mu.Unlock()
-		if s == nil {
-			continue
-		}
 
 		switch frame.Type {
 		case muxproto.TypeConnectOK:
+			if s == nil {
+				continue
+			}
 			select {
 			case s.connectCh <- nil:
 			default:
 			}
 
 		case muxproto.TypeConnectFail:
+			if s == nil {
+				continue
+			}
 			select {
 			case s.connectCh <- fmt.Errorf("%s", string(frame.Payload)):
 			default:
@@ -118,15 +151,83 @@ func (d *MuxDialer) readLoop(r io.Reader) {
 			s.closeLocal()
 
 		case muxproto.TypeData:
+			if s == nil {
+				continue
+			}
 			select {
 			case s.dataCh <- frame.Payload:
 			case <-s.closeCh:
 			}
 
 		case muxproto.TypeClose:
-			s.closeLocal()
+			if s != nil {
+				s.closeLocal()
+			}
+
+		case muxproto.TypeListenOK:
+			d.mu.Lock()
+			l := d.listeners[frame.StreamID]
+			d.mu.Unlock()
+			if l == nil {
+				continue
+			}
+			l.addr = muxAddr(string(frame.Payload))
+			select {
+			case l.readyCh <- nil:
+			default:
+			}
+
+		case muxproto.TypeListenFail:
+			d.mu.Lock()
+			l := d.listeners[frame.StreamID]
+			delete(d.listeners, frame.StreamID)
+			d.mu.Unlock()
+			if l == nil {
+				continue
+			}
+			select {
+			case l.readyCh <- fmt.Errorf("%s", string(frame.Payload)):
+			default:
+			}
+			l.closeLocal()
+
+		case muxproto.TypeAccepted:
+			if len(frame.Payload) < 4 {
+				continue
+			}
+			listenerID := binary.BigEndian.Uint32(frame.Payload[:4])
+			d.mu.Lock()
+			l := d.listeners[listenerID]
+			if l == nil || l.closed || d.closed {
+				d.mu.Unlock()
+				_ = d.writer.WriteFrame(&muxproto.Frame{Type: muxproto.TypeClose, StreamID: frame.StreamID})
+				continue
+			}
+			s := &muxStream{
+				id:        frame.StreamID,
+				dialer:    d,
+				connectCh: make(chan error, 1),
+				dataCh:    make(chan []byte, 256),
+				closeCh:   make(chan struct{}),
+			}
+			accepted := false
+			select {
+			case l.acceptCh <- s:
+				d.streams[frame.StreamID] = s
+				accepted = true
+			default:
+				s.closeLocal()
+			}
+			d.mu.Unlock()
+			if !accepted {
+				_ = d.writer.WriteFrame(&muxproto.Frame{Type: muxproto.TypeClose, StreamID: frame.StreamID})
+			}
 		}
 	}
+}
+
+func (d *MuxDialer) nextLocalStreamID() uint32 {
+	return d.nextID.Add(2) - 1
 }
 
 // Dial opens a new multiplexed TCP connection to addr (host:port) through the relay.
@@ -137,7 +238,7 @@ func (d *MuxDialer) Dial(addr string) (net.Conn, error) {
 		return nil, fmt.Errorf("mux dialer closed")
 	}
 
-	id := d.nextID.Add(1)
+	id := d.nextLocalStreamID()
 	s := &muxStream{
 		id:        id,
 		dialer:    d,
@@ -175,6 +276,48 @@ func (d *MuxDialer) Dial(addr string) (net.Conn, error) {
 	}
 }
 
+func (d *MuxDialer) Listen(addr string) (net.Listener, error) {
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("mux dialer closed")
+	}
+	id := d.nextLocalStreamID()
+	l := &muxListener{
+		id:       id,
+		dialer:   d,
+		acceptCh: make(chan net.Conn, 128),
+		readyCh:  make(chan error, 1),
+		closeCh:  make(chan struct{}),
+		addr:     muxAddr(addr),
+	}
+	d.listeners[id] = l
+	d.mu.Unlock()
+
+	if err := d.writer.WriteFrame(&muxproto.Frame{
+		Type:     muxproto.TypeListen,
+		StreamID: id,
+		Payload:  []byte(addr),
+	}); err != nil {
+		d.removeListener(id)
+		l.closeLocal()
+		return nil, err
+	}
+
+	select {
+	case err := <-l.readyCh:
+		if err != nil {
+			return nil, err
+		}
+		return l, nil
+	case <-time.After(15 * time.Second):
+		_ = l.Close()
+		return nil, fmt.Errorf("mux listen timeout")
+	case <-d.closeCh:
+		return nil, fmt.Errorf("mux dialer closed")
+	}
+}
+
 // IsClosed returns true if the mux session has been closed.
 func (d *MuxDialer) IsClosed() bool {
 	d.mu.Lock()
@@ -188,16 +331,52 @@ func (d *MuxDialer) removeStream(id uint32) {
 	d.mu.Unlock()
 }
 
+func (d *MuxDialer) removeListener(id uint32) {
+	d.mu.Lock()
+	delete(d.listeners, id)
+	d.mu.Unlock()
+}
+
 // Close shuts down the mux session and all streams.
 func (d *MuxDialer) Close() error {
+	var closeErr error
+	d.closeOnce.Do(func() {
+		closeErr = d.close()
+	})
+	return closeErr
+}
+
+func (d *MuxDialer) close() error {
+	var queued []net.Conn
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil
+	}
 	d.closed = true
+	listenerIDs := make([]uint32, 0, len(d.listeners))
+	for id := range d.listeners {
+		listenerIDs = append(listenerIDs, id)
+	}
 	for _, s := range d.streams {
 		s.closeLocal()
 	}
+	for _, l := range d.listeners {
+		queued = append(queued, l.closeLocalLocked()...)
+	}
 	d.mu.Unlock()
+	closeAcceptedConns(queued)
+
+	for _, id := range listenerIDs {
+		_ = d.writer.WriteFrame(&muxproto.Frame{Type: muxproto.TypeListenClose, StreamID: id})
+	}
 	d.stdin.Close()
-	return d.session.Close()
+	select {
+	case err := <-d.waitCh:
+		return err
+	case <-time.After(3 * time.Second):
+		return d.session.Close()
+	}
 }
 
 // --- muxStream implements net.Conn ---
@@ -266,3 +445,65 @@ func (s *muxStream) RemoteAddr() net.Addr               { return nil }
 func (s *muxStream) SetDeadline(t time.Time) error      { return nil }
 func (s *muxStream) SetReadDeadline(t time.Time) error  { return nil }
 func (s *muxStream) SetWriteDeadline(t time.Time) error { return nil }
+
+func (l *muxListener) Accept() (net.Conn, error) {
+	select {
+	case conn, ok := <-l.acceptCh:
+		if !ok {
+			return nil, io.ErrClosedPipe
+		}
+		return conn, nil
+	case <-l.closeCh:
+		return nil, io.ErrClosedPipe
+	}
+}
+
+func (l *muxListener) Close() error {
+	l.dialer.mu.Lock()
+	if l.closed {
+		l.dialer.mu.Unlock()
+		return nil
+	}
+	delete(l.dialer.listeners, l.id)
+	queued := l.closeLocalLocked()
+	l.dialer.mu.Unlock()
+
+	_ = l.dialer.writer.WriteFrame(&muxproto.Frame{Type: muxproto.TypeListenClose, StreamID: l.id})
+	closeAcceptedConns(queued)
+	return nil
+}
+
+func (l *muxListener) closeLocal() {
+	l.dialer.mu.Lock()
+	queued := l.closeLocalLocked()
+	l.dialer.mu.Unlock()
+	closeAcceptedConns(queued)
+}
+
+func (l *muxListener) closeLocalLocked() []net.Conn {
+	if l.closed {
+		return nil
+	}
+	l.closed = true
+	close(l.closeCh)
+
+	var queued []net.Conn
+	for {
+		select {
+		case conn := <-l.acceptCh:
+			queued = append(queued, conn)
+		default:
+			return queued
+		}
+	}
+}
+
+func closeAcceptedConns(conns []net.Conn) {
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
+func (l *muxListener) Addr() net.Addr {
+	return l.addr
+}

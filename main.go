@@ -80,13 +80,13 @@ func cloneCLIOptions(opts *cli.Options) *cli.Options {
 		clone.IdentityFiles = append([]string(nil), opts.IdentityFiles...)
 	}
 	if opts.LocalForwards != nil {
-		clone.LocalForwards = append([]string(nil), opts.LocalForwards...)
+		clone.LocalForwards = append([]cli.ForwardSpec(nil), opts.LocalForwards...)
 	}
 	if opts.RemoteForwards != nil {
-		clone.RemoteForwards = append([]string(nil), opts.RemoteForwards...)
+		clone.RemoteForwards = append([]cli.ForwardSpec(nil), opts.RemoteForwards...)
 	}
 	if opts.DynamicForwards != nil {
-		clone.DynamicForwards = append([]string(nil), opts.DynamicForwards...)
+		clone.DynamicForwards = append([]cli.ForwardSpec(nil), opts.DynamicForwards...)
 	}
 	if opts.SendEnv != nil {
 		clone.SendEnv = append([]string(nil), opts.SendEnv...)
@@ -318,23 +318,23 @@ func runOnce(opts *cli.Options) (int, error) {
 	// Start port forwarding (all on finalClient)
 	forwardErrCh := make(chan error, len(opts.LocalForwards)+len(opts.RemoteForwards)+len(opts.DynamicForwards))
 	for _, lf := range opts.LocalForwards {
-		go func(spec string) {
-			if err := forwarding.StartLocalForward(finalClient, spec, opts.Verbose); err != nil {
-				reportForwardError(forwardErrCh, "local", spec, err)
+		go func(forward cli.ForwardSpec) {
+			if err := forwarding.StartLocalForwardWithPolicy(finalClient, forward.Spec, opts.Verbose, forwarding.RelayPolicy(forward.RelayPolicy)); err != nil {
+				reportForwardError(forwardErrCh, "local", forward.Spec, err)
 			}
 		}(lf)
 	}
 	for _, rf := range opts.RemoteForwards {
-		go func(spec string) {
-			if err := forwarding.StartRemoteForward(finalClient, spec, opts.Verbose); err != nil {
-				reportForwardError(forwardErrCh, "remote", spec, err)
+		go func(forward cli.ForwardSpec) {
+			if err := forwarding.StartRemoteForwardWithPolicy(finalClient, forward.Spec, opts.Verbose, forwarding.RelayPolicy(forward.RelayPolicy)); err != nil {
+				reportForwardError(forwardErrCh, "remote", forward.Spec, err)
 			}
 		}(rf)
 	}
 	for _, dp := range opts.DynamicForwards {
-		go func(spec string) {
-			if err := forwarding.StartDynamicForward(finalClient, spec, opts.Verbose); err != nil {
-				reportForwardError(forwardErrCh, "dynamic", spec, err)
+		go func(forward cli.ForwardSpec) {
+			if err := forwarding.StartDynamicForwardWithPolicy(finalClient, forward.Spec, opts.Verbose, forwarding.RelayPolicy(forward.RelayPolicy)); err != nil {
+				reportForwardError(forwardErrCh, "dynamic", forward.Spec, err)
 			}
 		}(dp)
 	}

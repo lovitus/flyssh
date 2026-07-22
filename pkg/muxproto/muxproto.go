@@ -13,6 +13,11 @@ const (
 	TypeConnectFail byte = 0x03
 	TypeData        byte = 0x04
 	TypeClose       byte = 0x05
+	TypeListen      byte = 0x06
+	TypeListenOK    byte = 0x07
+	TypeListenFail  byte = 0x08
+	TypeAccepted    byte = 0x09
+	TypeListenClose byte = 0x0a
 
 	HeaderSize = 9     // 1 type + 4 stream_id + 4 length
 	MaxPayload = 65536 // 64KB per frame

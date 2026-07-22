@@ -572,13 +572,13 @@ func cloneOptions(opts *cli.Options) *cli.Options {
 		clone.IdentityFiles = append([]string(nil), opts.IdentityFiles...)
 	}
 	if opts.LocalForwards != nil {
-		clone.LocalForwards = append([]string(nil), opts.LocalForwards...)
+		clone.LocalForwards = append([]cli.ForwardSpec(nil), opts.LocalForwards...)
 	}
 	if opts.RemoteForwards != nil {
-		clone.RemoteForwards = append([]string(nil), opts.RemoteForwards...)
+		clone.RemoteForwards = append([]cli.ForwardSpec(nil), opts.RemoteForwards...)
 	}
 	if opts.DynamicForwards != nil {
-		clone.DynamicForwards = append([]string(nil), opts.DynamicForwards...)
+		clone.DynamicForwards = append([]cli.ForwardSpec(nil), opts.DynamicForwards...)
 	}
 	if opts.SendEnv != nil {
 		clone.SendEnv = append([]string(nil), opts.SendEnv...)

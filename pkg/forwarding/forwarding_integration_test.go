@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,6 +142,135 @@ func TestStartRemoteForward(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("remote forward goroutine did not exit")
 	}
+}
+
+func TestStartRemoteForward_MuxRelayPrefer(t *testing.T) {
+	localEcho := testkit.StartTCPEchoServer(t)
+	sshSrv := testkit.StartSSHServer(t, map[string]string{"u1": "p1"})
+	client := dialTestSSH(t, sshSrv.Addr, "u1", "p1")
+	defer client.Close()
+
+	remotePort := freePort(t)
+	spec := fmt.Sprintf("127.0.0.1:%d:%s", remotePort, localEcho)
+	remoteAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- StartRemoteForwardWithPolicy(client, spec, false, RelayPrefer) }()
+
+	if err := testkit.WaitForTCP(remoteAddr, 5*time.Second); err != nil {
+		t.Fatalf("remote mux forward not ready: %v", err)
+	}
+	assertEcho(t, remoteAddr, "mux-prefer")
+
+	_ = client.Close()
+	waitForwardExit(t, errCh, "remote mux prefer forward")
+}
+
+func TestStartRemoteForward_MuxFallbackWhenTCPIPForwardDenied(t *testing.T) {
+	localEcho := testkit.StartTCPEchoServer(t)
+	sshSrv := testkit.StartSSHServerWithOptions(t, map[string]string{"u1": "p1"}, testkit.SSHServerOptions{
+		DenyRemoteForward: true,
+	})
+	client := dialTestSSH(t, sshSrv.Addr, "u1", "p1")
+	defer client.Close()
+
+	remotePort := freePort(t)
+	spec := fmt.Sprintf("127.0.0.1:%d:%s", remotePort, localEcho)
+	remoteAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- StartRemoteForwardWithPolicy(client, spec, false, RelayAuto) }()
+
+	if err := testkit.WaitForTCP(remoteAddr, 5*time.Second); err != nil {
+		t.Fatalf("remote mux fallback not ready: %v", err)
+	}
+	assertEcho(t, remoteAddr, "mux-fallback")
+
+	_ = client.Close()
+	waitForwardExit(t, errCh, "remote mux fallback forward")
+}
+
+func TestStartRemoteForward_DisableDoesNotFallbackWhenDenied(t *testing.T) {
+	sshSrv := testkit.StartSSHServerWithOptions(t, map[string]string{"u1": "p1"}, testkit.SSHServerOptions{
+		DenyRemoteForward: true,
+	})
+	client := dialTestSSH(t, sshSrv.Addr, "u1", "p1")
+	defer client.Close()
+
+	remotePort := freePort(t)
+	spec := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:1", remotePort)
+	err := StartRemoteForwardWithPolicy(client, spec, false, RelayDisable)
+	if err == nil {
+		t.Fatal("expected denied remote forward to fail")
+	}
+	if !strings.Contains(err.Error(), "tcpip-forward request denied") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(err.Error(), "mux relay") {
+		t.Fatalf("disable policy should not attempt mux fallback: %v", err)
+	}
+}
+
+func TestStartRemoteForward_AutoDoesNotFallbackWhenSSHClosed(t *testing.T) {
+	sshSrv := testkit.StartSSHServer(t, map[string]string{"u1": "p1"})
+	client := dialTestSSH(t, sshSrv.Addr, "u1", "p1")
+	_ = client.Close()
+
+	remotePort := freePort(t)
+	spec := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:1", remotePort)
+	err := StartRemoteForwardWithPolicy(client, spec, false, RelayAuto)
+	if err == nil {
+		t.Fatal("expected closed SSH client to fail")
+	}
+	if strings.Contains(err.Error(), "mux relay") {
+		t.Fatalf("closed SSH client should not attempt mux fallback: %v", err)
+	}
+}
+
+func TestStartRemoteForward_MuxFallbackPortOccupiedCombinesErrors(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy remote port: %v", err)
+	}
+	defer occupied.Close()
+
+	sshSrv := testkit.StartSSHServerWithOptions(t, map[string]string{"u1": "p1"}, testkit.SSHServerOptions{
+		DenyRemoteForward: true,
+	})
+	client := dialTestSSH(t, sshSrv.Addr, "u1", "p1")
+	defer client.Close()
+
+	remotePort := occupied.Addr().(*net.TCPAddr).Port
+	spec := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:1", remotePort)
+	err = StartRemoteForwardWithPolicy(client, spec, false, RelayAuto)
+	if err == nil {
+		t.Fatal("expected occupied remote port to fail")
+	}
+	for _, want := range []string{"sshd tcpip-forward denied", "mux relay failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error should contain %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestStartRemoteForward_MuxRelayReleasesListenerOnClose(t *testing.T) {
+	localEcho := testkit.StartTCPEchoServer(t)
+	sshSrv := testkit.StartSSHServer(t, map[string]string{"u1": "p1"})
+	client := dialTestSSH(t, sshSrv.Addr, "u1", "p1")
+
+	remotePort := freePort(t)
+	spec := fmt.Sprintf("127.0.0.1:%d:%s", remotePort, localEcho)
+	remoteAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- StartRemoteForwardWithPolicy(client, spec, false, RelayPrefer) }()
+
+	if err := testkit.WaitForTCP(remoteAddr, 5*time.Second); err != nil {
+		t.Fatalf("remote mux forward not ready: %v", err)
+	}
+	_ = client.Close()
+	waitForwardExit(t, errCh, "remote mux release forward")
+	waitListenAvailable(t, remoteAddr, 5*time.Second)
 }
 
 func TestStartLocalForward_Multiple(t *testing.T) {
@@ -341,6 +471,22 @@ func waitForwardExit(t *testing.T, errCh <-chan error, name string) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("%s goroutine did not exit", name)
 	}
+}
+
+func waitListenAvailable(t *testing.T, addr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			_ = ln.Close()
+			return
+		}
+		lastErr = err
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("listen on %s did not become available: %v", addr, lastErr)
 }
 
 func assertEcho(t *testing.T, addr, msg string) {

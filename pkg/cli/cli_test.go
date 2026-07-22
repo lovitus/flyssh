@@ -252,3 +252,107 @@ func TestParseArgs_TransferFlagRejectsForwarding(t *testing.T) {
 		}
 	}
 }
+
+func TestParseArgs_RelayPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want RelayPolicy
+	}{
+		{"equals auto", []string{"user@host", "--relay=auto", "-L", "8080:127.0.0.1:80"}, RelayPolicyAuto},
+		{"equals disable", []string{"user@host", "--relay=disable", "-R", "8080:127.0.0.1:80"}, RelayPolicyDisable},
+		{"space prefer", []string{"user@host", "--relay", "prefer", "-D", "1080"}, RelayPolicyPrefer},
+		{"disable alias", []string{"user@host", "--disable-relay", "-L", "8080:127.0.0.1:80"}, RelayPolicyDisable},
+		{"prefer alias", []string{"user@host", "--prefer-relay", "-R", "8080:127.0.0.1:80"}, RelayPolicyPrefer},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, err := ParseArgs(tt.args)
+			if err != nil {
+				t.Fatalf("ParseArgs returned error: %v", err)
+			}
+			if opts.RelayPolicy != tt.want {
+				t.Fatalf("global policy: got %q want %q", opts.RelayPolicy, tt.want)
+			}
+			for _, forwards := range [][]ForwardSpec{opts.LocalForwards, opts.RemoteForwards, opts.DynamicForwards} {
+				for _, forward := range forwards {
+					if forward.RelayPolicy != tt.want {
+						t.Fatalf("forward policy: got %q want %q in %+v", forward.RelayPolicy, tt.want, forward)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestParseArgs_RelayPolicyRejectsConflicts(t *testing.T) {
+	tests := [][]string{
+		{"user@host", "--relay=prefer", "--disable-relay", "-L", "8080:127.0.0.1:80"},
+		{"user@host", "--prefer-relay", "--relay=disable", "-R", "8080:127.0.0.1:80"},
+		{"user@host", "--disable-relay", "--prefer-relay", "-D", "1080"},
+	}
+	for _, args := range tests {
+		_, err := ParseArgs(args)
+		if err == nil {
+			t.Fatalf("expected conflict for %#v", args)
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("unexpected error for %#v: %v", args, err)
+		}
+	}
+}
+
+func TestParseArgs_RelayPolicyRequiresForwarding(t *testing.T) {
+	_, err := ParseArgs([]string{"user@host", "--relay=prefer"})
+	if err == nil {
+		t.Fatal("expected relay policy without forwarding to fail")
+	}
+	if !strings.Contains(err.Error(), "requires port forwarding") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgs_EasyForwardRelayQuery(t *testing.T) {
+	opts, err := ParseArgs([]string{
+		"user@host",
+		"--relay=prefer",
+		"-ltcp://:8080/remote:80?relay=disable,:8081/remote:81",
+		"-rtcp://:3333/:2222?relay=auto",
+		"-dynamicproxy://1081?relay=disable",
+	})
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if len(opts.LocalForwards) != 2 || len(opts.RemoteForwards) != 1 || len(opts.DynamicForwards) != 1 {
+		t.Fatalf("unexpected forwards: local=%+v remote=%+v dynamic=%+v", opts.LocalForwards, opts.RemoteForwards, opts.DynamicForwards)
+	}
+	if got := opts.LocalForwards[0].RelayPolicy; got != RelayPolicyDisable {
+		t.Fatalf("local query policy: got %q want disable", got)
+	}
+	if got := opts.LocalForwards[1].RelayPolicy; got != RelayPolicyPrefer {
+		t.Fatalf("local inherited policy: got %q want prefer", got)
+	}
+	if got := opts.RemoteForwards[0].RelayPolicy; got != RelayPolicyAuto {
+		t.Fatalf("remote query policy: got %q want auto", got)
+	}
+	if got := opts.DynamicForwards[0].RelayPolicy; got != RelayPolicyDisable {
+		t.Fatalf("dynamic query policy: got %q want disable", got)
+	}
+	if got := opts.LocalForwards[0].Spec; got != "127.0.0.1:8080:remote:80" {
+		t.Fatalf("unexpected normalized local spec: %q", got)
+	}
+	if got := opts.DynamicForwards[0].Spec; got != "127.0.0.1:1081" {
+		t.Fatalf("unexpected normalized dynamic spec: %q", got)
+	}
+}
+
+func TestParseArgs_EasyForwardRejectsUnknownQueryKey(t *testing.T) {
+	raw := ":8080/remote:80?relay=prefer&mode=bad"
+	_, err := ParseArgs([]string{"user@host", "-ltcp://" + raw})
+	if err == nil {
+		t.Fatal("expected unknown query key error")
+	}
+	if !strings.Contains(err.Error(), "mode") || !strings.Contains(err.Error(), raw) {
+		t.Fatalf("error should include key and raw entry, got: %v", err)
+	}
+}

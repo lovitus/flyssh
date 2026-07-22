@@ -2,9 +2,23 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
+
+type RelayPolicy string
+
+const (
+	RelayPolicyAuto    RelayPolicy = "auto"
+	RelayPolicyDisable RelayPolicy = "disable"
+	RelayPolicyPrefer  RelayPolicy = "prefer"
+)
+
+type ForwardSpec struct {
+	Spec        string
+	RelayPolicy RelayPolicy
+}
 
 // Options holds all parsed CLI arguments
 type Options struct {
@@ -62,9 +76,13 @@ type Options struct {
 	ReconnectDelay int  // --reconnect-delay seconds (default 3)
 
 	// Port forwarding
-	LocalForwards   []string // -L
-	RemoteForwards  []string // -R
-	DynamicForwards []string // -D
+	LocalForwards   []ForwardSpec // -L
+	RemoteForwards  []ForwardSpec // -R
+	DynamicForwards []ForwardSpec // -D
+	RelayPolicy     RelayPolicy   // --relay auto|disable|prefer
+	relayPolicySet  bool
+	relayPolicySrc  string
+	relayPolicyErr  string
 
 	// -o key=value options
 	SSHOptions map[string]string
@@ -144,6 +162,9 @@ Options:
   -p port         Port (default: 22)
   -q              Quiet mode
   -R [bind:]port:host:port  Remote port forwarding
+  --relay mode    Port forwarding relay policy: auto|disable|prefer
+  --disable-relay Disable FlySSH relay fallback for port forwarding
+  --prefer-relay  Prefer FlySSH relay for port forwarding
   -s              Subsystem request
   -T              Disable pseudo-terminal
   -t              Force pseudo-terminal allocation
@@ -191,7 +212,9 @@ Easy Forwarding (GOST-style):
   -rtcp://[host:]port/[host:]port[,...]  Remote forward (comma-separated pairs)
 
   Format: host:port | :port | port — missing host defaults to 127.0.0.1
+  Optional per-forward query: ?relay=auto|disable|prefer
   Example: -ltcp://:8081/host3:22      listen local :8081 → host3:22 via chain
+  Example: -rtcp://:3333/:2222?relay=prefer  prefer relay for this remote forward
   Example: -ltcp://:5000/:5000,:2222/192.168.1.1:22  two local forwards in one flag
   Example: -rtcp://0.0.0.0:8082/127.0.0.1:80  remote :8082 → local :80
 
@@ -305,6 +328,23 @@ func ParseArgs(args []string) (*Options, error) {
 				opts.PasswordsCSV = arg[len("--passwords="):]
 			case arg == "--no-reconnect":
 				opts.NoReconnect = true
+			case arg == "--relay" && i+1 < len(args):
+				i++
+				if err := opts.setRelayPolicy(args[i], "--relay"); err != nil {
+					return nil, err
+				}
+			case strings.HasPrefix(arg, "--relay="):
+				if err := opts.setRelayPolicy(arg[len("--relay="):], "--relay"); err != nil {
+					return nil, err
+				}
+			case arg == "--disable-relay":
+				if err := opts.setRelayPolicy(string(RelayPolicyDisable), "--disable-relay"); err != nil {
+					return nil, err
+				}
+			case arg == "--prefer-relay":
+				if err := opts.setRelayPolicy(string(RelayPolicyPrefer), "--prefer-relay"); err != nil {
+					return nil, err
+				}
 			case arg == "--wingui":
 				opts.Wingui = true
 			case arg == "--gui-internal-home":
@@ -389,7 +429,11 @@ func ParseArgs(args []string) (*Options, error) {
 		// GOST-style single-dash URL flags: -dynamicproxy:// -ltcp:// -rtcp://
 		if strings.HasPrefix(arg, "-dynamicproxy://") {
 			val := arg[len("-dynamicproxy://"):]
-			opts.DynamicForwards = append(opts.DynamicForwards, normalizeBind(val))
+			spec, policy, err := parseEasyForward(val, "dynamicproxy")
+			if err != nil {
+				return nil, err
+			}
+			opts.DynamicForwards = append(opts.DynamicForwards, ForwardSpec{Spec: normalizeBind(spec), RelayPolicy: policy})
 			i++
 			continue
 		}
@@ -397,7 +441,11 @@ func ParseArgs(args []string) (*Options, error) {
 			val := arg[len("-ltcp://"):]
 			for _, pair := range strings.Split(val, ",") {
 				if pair != "" {
-					opts.LocalForwards = append(opts.LocalForwards, normalizeTcpForward(pair))
+					spec, policy, err := parseEasyForward(pair, "ltcp")
+					if err != nil {
+						return nil, err
+					}
+					opts.LocalForwards = append(opts.LocalForwards, ForwardSpec{Spec: normalizeTcpForward(spec), RelayPolicy: policy})
 				}
 			}
 			i++
@@ -407,7 +455,11 @@ func ParseArgs(args []string) (*Options, error) {
 			val := arg[len("-rtcp://"):]
 			for _, pair := range strings.Split(val, ",") {
 				if pair != "" {
-					opts.RemoteForwards = append(opts.RemoteForwards, normalizeTcpForward(pair))
+					spec, policy, err := parseEasyForward(pair, "rtcp")
+					if err != nil {
+						return nil, err
+					}
+					opts.RemoteForwards = append(opts.RemoteForwards, ForwardSpec{Spec: normalizeTcpForward(spec), RelayPolicy: policy})
 				}
 			}
 			i++
@@ -507,7 +559,7 @@ func ParseArgs(args []string) (*Options, error) {
 				case 'c':
 					opts.CipherSpec = val
 				case 'D':
-					opts.DynamicForwards = append(opts.DynamicForwards, val)
+					opts.DynamicForwards = append(opts.DynamicForwards, ForwardSpec{Spec: val})
 				case 'E':
 					opts.LogFile = val
 				case 'e':
@@ -519,7 +571,7 @@ func ParseArgs(args []string) (*Options, error) {
 				case 'J':
 					opts.ProxyJump = val
 				case 'L':
-					opts.LocalForwards = append(opts.LocalForwards, val)
+					opts.LocalForwards = append(opts.LocalForwards, ForwardSpec{Spec: val})
 				case 'l':
 					opts.LoginName = val
 				case 'm':
@@ -546,7 +598,7 @@ func ParseArgs(args []string) (*Options, error) {
 						opts.Port = p
 					}
 				case 'R':
-					opts.RemoteForwards = append(opts.RemoteForwards, val)
+					opts.RemoteForwards = append(opts.RemoteForwards, ForwardSpec{Spec: val})
 				case 'W':
 					opts.StdioForward = val
 				}
@@ -613,6 +665,10 @@ func ParseArgs(args []string) (*Options, error) {
 	if err := validateGuiMode(opts); err != nil {
 		return nil, err
 	}
+	if err := validateRelayPolicy(opts); err != nil {
+		return nil, err
+	}
+	resolveForwardRelayPolicies(opts)
 	if err := validateTransferMode(opts); err != nil {
 		return nil, err
 	}
@@ -624,6 +680,91 @@ func ParseArgs(args []string) (*Options, error) {
 	}
 
 	return opts, nil
+}
+
+func (opts *Options) setRelayPolicy(value, source string) error {
+	policy, err := ParseRelayPolicy(value)
+	if err != nil {
+		return err
+	}
+	if opts.relayPolicySet {
+		opts.relayPolicyErr = fmt.Sprintf("relay policy options are mutually exclusive: %s and %s", opts.relayPolicySrc, source)
+		return nil
+	}
+	opts.RelayPolicy = policy
+	opts.relayPolicySet = true
+	opts.relayPolicySrc = source
+	return nil
+}
+
+func ParseRelayPolicy(value string) (RelayPolicy, error) {
+	switch RelayPolicy(strings.TrimSpace(value)) {
+	case RelayPolicyAuto:
+		return RelayPolicyAuto, nil
+	case RelayPolicyDisable:
+		return RelayPolicyDisable, nil
+	case RelayPolicyPrefer:
+		return RelayPolicyPrefer, nil
+	default:
+		return "", fmt.Errorf("invalid relay policy %q (expected auto, disable, or prefer)", value)
+	}
+}
+
+func parseEasyForward(raw, kind string) (spec string, policy RelayPolicy, err error) {
+	spec = raw
+	query := ""
+	if idx := strings.Index(raw, "?"); idx >= 0 {
+		spec = raw[:idx]
+		query = raw[idx+1:]
+	}
+	if query == "" {
+		return spec, "", nil
+	}
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid %s query in %q: %w", kind, raw, err)
+	}
+	for key := range values {
+		if key != "relay" {
+			return "", "", fmt.Errorf("unknown easy forwarding query key %q in %q", key, raw)
+		}
+	}
+	relayValues := values["relay"]
+	if len(relayValues) != 1 {
+		return "", "", fmt.Errorf("relay query must appear exactly once in %q", raw)
+	}
+	policy, err = ParseRelayPolicy(relayValues[0])
+	if err != nil {
+		return "", "", fmt.Errorf("invalid relay query in %q: %w", raw, err)
+	}
+	return spec, policy, nil
+}
+
+func validateRelayPolicy(opts *Options) error {
+	if opts.relayPolicyErr != "" {
+		return fmt.Errorf("%s", opts.relayPolicyErr)
+	}
+	if opts.relayPolicySet && !opts.HasPortForwarding() {
+		return fmt.Errorf("--relay requires port forwarding (-L/-R/-D or easy forwarding)")
+	}
+	return nil
+}
+
+func resolveForwardRelayPolicies(opts *Options) {
+	global := opts.RelayPolicy
+	if global == "" {
+		global = RelayPolicyAuto
+	}
+	resolve := func(forwards []ForwardSpec) {
+		for i := range forwards {
+			if forwards[i].RelayPolicy == "" {
+				forwards[i].RelayPolicy = global
+			}
+		}
+	}
+	resolve(opts.LocalForwards)
+	resolve(opts.RemoteForwards)
+	resolve(opts.DynamicForwards)
 }
 
 func validateGuiMode(opts *Options) error {
@@ -832,6 +973,10 @@ func (opts *Options) HasTransferMode() bool {
 
 func (opts *Options) HasGUIInternalMode() bool {
 	return opts.GuiInternalHome || opts.GuiInternalList != ""
+}
+
+func (opts *Options) HasPortForwarding() bool {
+	return len(opts.LocalForwards) > 0 || len(opts.RemoteForwards) > 0 || len(opts.DynamicForwards) > 0
 }
 
 // ParseHopSpec parses a "user[:pass]@host[:port]" string into a HopSpec.
