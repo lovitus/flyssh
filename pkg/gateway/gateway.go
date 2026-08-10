@@ -5,16 +5,31 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
 )
 
+// ReadyInfo describes a gateway listener after it is ready to accept clients.
+// HostKeys contains SHA256 fingerprints suitable for client-side pinning.
+type ReadyInfo struct {
+	Address  string   `json:"address"`
+	Port     int      `json:"port"`
+	HostKeys []string `json:"host_keys"`
+}
+
 // Serve starts a local SSH gateway server that proxies connections to the
 // upstream finalClient. It blocks until the upstream connection dies or the
 // listener is closed. spec format: "user:pass@bind:port".
 func Serve(finalClient *ssh.Client, spec string, verbose bool) error {
+	return ServeWithReady(finalClient, spec, verbose, nil)
+}
+
+// ServeWithReady is Serve with an optional callback invoked after the local
+// listener is ready and before the accept loop starts.
+func ServeWithReady(finalClient *ssh.Client, spec string, verbose bool, ready func(ReadyInfo) error) error {
 	user, password, bindAddr, err := parseGatewaySpec(spec)
 	if err != nil {
 		return fmt.Errorf("gateway: %w", err)
@@ -33,8 +48,36 @@ func Serve(finalClient *ssh.Client, spec string, verbose bool) error {
 	if verbose {
 		log.Printf("[gateway] Listening on %s (user=%s)", ln.Addr(), user)
 	}
+	if ready != nil {
+		info, err := gatewayReadyInfo(ln, hostKeys)
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		if err := ready(info); err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("gateway: report ready: %w", err)
+		}
+	}
 
 	return serveListener(ln, finalClient, user, password, hostKeys, verbose)
+}
+
+func gatewayReadyInfo(ln net.Listener, hostKeys []ssh.Signer) (ReadyInfo, error) {
+	address := ln.Addr().String()
+	_, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		return ReadyInfo{}, fmt.Errorf("gateway: parse listener address %q: %w", address, err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return ReadyInfo{}, fmt.Errorf("gateway: invalid listener port %q", portText)
+	}
+	fingerprints := make([]string, 0, len(hostKeys))
+	for _, signer := range hostKeys {
+		fingerprints = append(fingerprints, ssh.FingerprintSHA256(signer.PublicKey()))
+	}
+	return ReadyInfo{Address: address, Port: port, HostKeys: fingerprints}, nil
 }
 
 // serveListener is the internal serve loop, separated for testability.

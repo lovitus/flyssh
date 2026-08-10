@@ -426,14 +426,15 @@ func resetRsyncLocalPathStyleCache() {
 
 func TestEncodeInternalRsyncOptionsClearsTransferFields(t *testing.T) {
 	opts := &cli.Options{
-		Host:            "host",
-		User:            "user",
-		IdentityFiles:   []string{"id_rsa"},
-		SSHOptions:      map[string]string{"StrictHostKeyChecking": "no"},
-		RsyncUpload:     "-avz ./src /dst",
-		Wingui:          true,
-		GuiInternalHome: true,
-		GuiInternalList: "/tmp",
+		Host:               "host",
+		User:               "user",
+		IdentityFiles:      []string{"id_rsa"},
+		SSHOptions:         map[string]string{"StrictHostKeyChecking": "no"},
+		RsyncUpload:        "-avz ./src /dst",
+		Wingui:             true,
+		GuiInternalHome:    true,
+		GuiInternalList:    "/tmp",
+		GuiInternalGateway: "flyssh:secret@127.0.0.1:0",
 	}
 
 	payload, err := EncodeInternalRsyncOptions(opts)
@@ -447,7 +448,7 @@ func TestEncodeInternalRsyncOptionsClearsTransferFields(t *testing.T) {
 	if decoded.RsyncUpload != "" || decoded.RsyncDownload != "" || decoded.ScpUpload != "" || decoded.ScpDownload != "" {
 		t.Fatalf("transfer fields were not cleared: %+v", decoded)
 	}
-	if decoded.Wingui || decoded.GuiInternalHome || decoded.GuiInternalList != "" {
+	if decoded.Wingui || decoded.GuiInternalHome || decoded.GuiInternalList != "" || decoded.GuiInternalGateway != "" {
 		t.Fatalf("GUI fields were not cleared: %+v", decoded)
 	}
 	if decoded.Host != "host" || decoded.User != "user" {

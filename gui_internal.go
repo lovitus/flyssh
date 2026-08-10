@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/flyssh/flyssh/pkg/cli"
+	"github.com/flyssh/flyssh/pkg/gateway"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -62,6 +63,34 @@ func runGUIInternalList(opts *cli.Options, dir string) int {
 	sortGUIRemoteEntries(entries)
 	if err := json.NewEncoder(os.Stdout).Encode(entries); err != nil {
 		fmt.Fprintf(os.Stderr, "flyssh: encode remote listing: %v\n", err)
+		return 255
+	}
+	return 0
+}
+
+func runGUIInternalGateway(opts *cli.Options, spec string) int {
+	sshConfig, clients, finalClient, err := connectChain(opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
+		return 255
+	}
+	defer closeClients(clients)
+
+	stopKeepalive := make(chan struct{})
+	interval, warnKeepaliveDefault := keepAliveInterval(sshConfig)
+	if warnKeepaliveDefault {
+		fmt.Fprintln(os.Stderr, "flyssh: ServerAliveInterval=0 requested; keepalive remains enabled with default 30s")
+	}
+	for _, client := range clients {
+		go keepAliveUntil(client, interval, sshConfig.ServerAliveCountMax, stopKeepalive)
+	}
+	defer close(stopKeepalive)
+
+	err = gateway.ServeWithReady(finalClient, spec, opts.Verbose, func(info gateway.ReadyInfo) error {
+		return json.NewEncoder(os.Stdout).Encode(info)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
 		return 255
 	}
 	return 0

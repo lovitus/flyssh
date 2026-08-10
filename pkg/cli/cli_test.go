@@ -105,6 +105,36 @@ func TestParseArgs_GUIInternalFlags(t *testing.T) {
 	if !opts.GuiInternalHome {
 		t.Fatal("expected GuiInternalHome")
 	}
+
+	opts, err = ParseArgs([]string{"user@host", "--gui-internal-gateway", "flyssh:secret@127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if opts.GuiInternalGateway != "flyssh:secret@127.0.0.1:0" {
+		t.Fatalf("unexpected gateway spec: %q", opts.GuiInternalGateway)
+	}
+	if !opts.HasGUIInternalMode() {
+		t.Fatal("expected GUI internal mode")
+	}
+
+	opts, err = ParseArgs([]string{"user@host", "--gui-internal-gateway=flyssh:other@127.0.0.1:0"})
+	if err != nil || opts.GuiInternalGateway != "flyssh:other@127.0.0.1:0" {
+		t.Fatalf("equals-form gateway parse failed: opts=%+v err=%v", opts, err)
+	}
+}
+
+func TestParseArgs_GUIInternalGatewayRejectsOtherInternalModes(t *testing.T) {
+	_, err := ParseArgs([]string{
+		"user@host",
+		"--gui-internal-gateway", "flyssh:secret@127.0.0.1:0",
+		"--gui-internal-list", "/tmp",
+	})
+	if err == nil {
+		t.Fatal("expected GUI internal modes to be mutually exclusive")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestParseArgs_SSHGatewayRejectsGUIInternalFlags(t *testing.T) {

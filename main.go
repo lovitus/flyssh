@@ -36,6 +36,7 @@ func scrubArgs() {
 	sensitive := map[string]bool{
 		"--password": true, "--passwords": true, "--socks-pass": true,
 		"--secondhost": true, "--secondhostpass": true, "--ssh-gateway": true,
+		"--gui-internal-gateway": true,
 	}
 	for i := 0; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -195,6 +196,13 @@ func main() {
 			os.Exit(255)
 		}
 		os.Exit(runGUIInternalList(opts, opts.GuiInternalList))
+	}
+	if opts.GuiInternalGateway != "" {
+		if opts.Host == "" {
+			fmt.Fprintln(os.Stderr, "flyssh: --gui-internal-gateway requires a host")
+			os.Exit(255)
+		}
+		os.Exit(runGUIInternalGateway(opts, opts.GuiInternalGateway))
 	}
 	if opts.Wingui {
 		if runtime.GOOS != "windows" {

@@ -191,6 +191,7 @@ func EncodeInternalRsyncOptions(opts *cli.Options) (string, error) {
 	clone.Wingui = false
 	clone.GuiInternalHome = false
 	clone.GuiInternalList = ""
+	clone.GuiInternalGateway = ""
 	clone.RsyncUpload = ""
 	clone.RsyncDownload = ""
 	clone.ScpUpload = ""

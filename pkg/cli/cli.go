@@ -121,9 +121,10 @@ type Options struct {
 	MoshSession string // --mosh-session NAME
 
 	// Windows companion GUI and hidden GUI subprocess commands
-	Wingui          bool   // --wingui
-	GuiInternalHome bool   // --gui-internal-home
-	GuiInternalList string // --gui-internal-list DIR
+	Wingui             bool   // --wingui
+	GuiInternalHome    bool   // --gui-internal-home
+	GuiInternalList    string // --gui-internal-list DIR
+	GuiInternalGateway string // --gui-internal-gateway SPEC
 }
 
 // HopSpec describes a single hop in a multi-hop SSH chain.
@@ -361,6 +362,18 @@ func ParseArgs(args []string) (*Options, error) {
 					return nil, fmt.Errorf("--gui-internal-list requires a directory")
 				}
 				opts.GuiInternalList = value
+			case arg == "--gui-internal-gateway" && i+1 < len(args):
+				i++
+				if args[i] == "" {
+					return nil, fmt.Errorf("--gui-internal-gateway requires a spec")
+				}
+				opts.GuiInternalGateway = args[i]
+			case strings.HasPrefix(arg, "--gui-internal-gateway="):
+				value := arg[len("--gui-internal-gateway="):]
+				if value == "" {
+					return nil, fmt.Errorf("--gui-internal-gateway requires a spec")
+				}
+				opts.GuiInternalGateway = value
 			case arg == "--rsync-upload" && i+1 < len(args):
 				i++
 				opts.RsyncUpload = args[i]
@@ -791,7 +804,17 @@ func validateGuiMode(opts *Options) error {
 	if !opts.HasGUIInternalMode() {
 		return nil
 	}
-	if opts.GuiInternalHome && opts.GuiInternalList != "" {
+	internalCount := 0
+	if opts.GuiInternalHome {
+		internalCount++
+	}
+	if opts.GuiInternalList != "" {
+		internalCount++
+	}
+	if opts.GuiInternalGateway != "" {
+		internalCount++
+	}
+	if internalCount > 1 {
 		return fmt.Errorf("GUI internal flags are mutually exclusive")
 	}
 	if opts.HasTransferMode() {
@@ -972,7 +995,7 @@ func (opts *Options) HasTransferMode() bool {
 }
 
 func (opts *Options) HasGUIInternalMode() bool {
-	return opts.GuiInternalHome || opts.GuiInternalList != ""
+	return opts.GuiInternalHome || opts.GuiInternalList != "" || opts.GuiInternalGateway != ""
 }
 
 func (opts *Options) HasPortForwarding() bool {

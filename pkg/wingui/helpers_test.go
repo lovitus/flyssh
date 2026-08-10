@@ -2,6 +2,7 @@ package wingui
 
 import (
 	"errors"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -17,6 +18,109 @@ func TestBuildChildArgsRemovesWinguiAndKeepsRawSecrets(t *testing.T) {
 	want := []string{"--socks", "127.0.0.1:1080", "user@host", "--password", "secret", "--gui-internal-home"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected child args:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestBuildShellGatewayArgsPreservesConnectionAndUsesHiddenMode(t *testing.T) {
+	raw := []string{"--socks", "127.0.0.1:1080", "user:real-secret@host", "--wingui"}
+	got, err := buildShellGatewayArgs(raw, "flyssh", "local-secret")
+	if err != nil {
+		t.Fatalf("buildShellGatewayArgs returned error: %v", err)
+	}
+	want := []string{
+		"--socks", "127.0.0.1:1080", "user:real-secret@host",
+		"--no-reconnect", "--gui-internal-gateway", "flyssh:local-secret@127.0.0.1:0",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected gateway args:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestBuildShellGatewayArgsDoesNotDuplicateNoReconnect(t *testing.T) {
+	got, err := buildShellGatewayArgs([]string{"user@host", "--no-reconnect", "--wingui"}, "flyssh", "secret")
+	if err != nil {
+		t.Fatalf("buildShellGatewayArgs returned error: %v", err)
+	}
+	count := 0
+	for _, arg := range got {
+		if arg == "--no-reconnect" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("--no-reconnect count = %d in %#v", count, got)
+	}
+}
+
+func TestRandomShellGatewayCredentialIsGatewaySafe(t *testing.T) {
+	user, password, err := randomShellGatewayCredential()
+	if err != nil {
+		t.Fatalf("randomShellGatewayCredential returned error: %v", err)
+	}
+	if user != "flyssh" || len(password) < 24 {
+		t.Fatalf("unexpected credential: user=%q password length=%d", user, len(password))
+	}
+	if strings.ContainsAny(password, `:@/\\`) {
+		t.Fatalf("password contains gateway delimiters: %q", password)
+	}
+}
+
+func TestBuildExternalShellArgs(t *testing.T) {
+	info := shellGatewayInfo{
+		Address:  "127.0.0.1:32123",
+		Port:     32123,
+		HostKeys: []string{"SHA256:first", "SHA256:second"},
+	}
+
+	putty, err := buildExternalShellArgs(shellClientPuTTY, info, "flyssh", "secret")
+	if err != nil {
+		t.Fatalf("build PuTTY args: %v", err)
+	}
+	wantPuTTY := []string{
+		"-ssh", "-P", "32123", "-l", "flyssh", "-pw", "secret",
+		"-hostkey", "SHA256:first", "-hostkey", "SHA256:second",
+		"-noagent", "-noshare", "127.0.0.1",
+	}
+	if !reflect.DeepEqual(putty, wantPuTTY) {
+		t.Fatalf("PuTTY args:\n got: %#v\nwant: %#v", putty, wantPuTTY)
+	}
+
+	secureCRT, err := buildExternalShellArgs(shellClientSecureCRT, info, "flyssh", "secret")
+	if err != nil {
+		t.Fatalf("build SecureCRT args: %v", err)
+	}
+	wantSecureCRT := []string{"/T", "/SSH2", "/L", "flyssh", "/PASSWORD", "secret", "/P", "32123", "127.0.0.1"}
+	if !reflect.DeepEqual(secureCRT, wantSecureCRT) {
+		t.Fatalf("SecureCRT args:\n got: %#v\nwant: %#v", secureCRT, wantSecureCRT)
+	}
+}
+
+func TestBuildXshellArgsEscapesURLCredentials(t *testing.T) {
+	info := shellGatewayInfo{Port: 32123}
+	args, err := buildExternalShellArgs(shellClientXshell, info, "user@local", "p@ss:/?#")
+	if err != nil {
+		t.Fatalf("build Xshell args: %v", err)
+	}
+	if len(args) != 2 || args[0] != "-url" {
+		t.Fatalf("unexpected Xshell args: %#v", args)
+	}
+	parsed, err := url.Parse(args[1])
+	if err != nil {
+		t.Fatalf("parse Xshell URL: %v", err)
+	}
+	password, ok := parsed.User.Password()
+	if parsed.User.Username() != "user@local" || !ok || password != "p@ss:/?#" {
+		t.Fatalf("Xshell URL lost credentials: %q", args[1])
+	}
+	if parsed.Host != "127.0.0.1:32123" {
+		t.Fatalf("Xshell host = %q", parsed.Host)
+	}
+}
+
+func TestBuildPuTTYArgsRequiresPinnedHostKey(t *testing.T) {
+	_, err := buildExternalShellArgs(shellClientPuTTY, shellGatewayInfo{Port: 32123}, "flyssh", "secret")
+	if err == nil || !strings.Contains(err.Error(), "host keys") {
+		t.Fatalf("expected missing host key error, got %v", err)
 	}
 }
 
@@ -180,10 +284,11 @@ func TestFormatChildCommandRedactsSecrets(t *testing.T) {
 	got := formatChildCommand(`C:\Tools\flyssh.exe`, []string{
 		"--password", "secret",
 		"--passwords=p1,p2",
+		"--gui-internal-gateway", "flyssh:local-secret@127.0.0.1:0",
 		"root:inline@10.0.0.1",
 		"--scp-download", `-r '/tmp/src' 'C:\out dir'`,
 	})
-	for _, forbidden := range []string{"secret", "p1,p2", "inline"} {
+	for _, forbidden := range []string{"secret", "local-secret", "p1,p2", "inline"} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("command preview leaked %q in %q", forbidden, got)
 		}

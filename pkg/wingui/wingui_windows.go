@@ -3,6 +3,7 @@
 package wingui
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -190,6 +191,13 @@ type childProcess struct {
 	once sync.Once
 }
 
+type activeShellGateway struct {
+	child    *childProcess
+	info     shellGatewayInfo
+	user     string
+	password string
+}
+
 func (c *childProcess) wait() error {
 	err := c.cmd.Wait()
 	c.closeJob()
@@ -233,6 +241,9 @@ type app struct {
 	remoteRename *walk.PushButton
 	localDelete  *walk.PushButton
 	remoteDelete *walk.PushButton
+	puttyButton  *walk.PushButton
+	xshellButton *walk.PushButton
+	secureButton *walk.PushButton
 	log          *walk.TextEdit
 
 	mu                sync.Mutex
@@ -246,6 +257,8 @@ type app struct {
 	busy              bool
 	rsyncAvailable    bool
 	current           *childProcess
+	shellClients      map[shellClientKind]string
+	shellGateway      *activeShellGateway
 	suppressSelection bool
 }
 
@@ -264,6 +277,7 @@ func Run(opts *cli.Options, rawArgs []string) error {
 		opts:           opts,
 		rawArgs:        append([]string(nil), rawArgs...),
 		exe:            exe,
+		shellClients:   discoverShellClients(exe),
 		localNav:       navState{Current: cwd},
 		selection:      newSelectionState(),
 		rsyncAvailable: rsyncErr == nil,
@@ -347,6 +361,11 @@ func (a *app) run() error {
 			Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
 				Label{Text: "Log"},
 				PushButton{Text: "Clear", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: a.clearLog},
+				HSpacer{},
+				Label{Text: "Open Shell"},
+				PushButton{AssignTo: &a.puttyButton, Text: "PuTTY", Font: buttonFont(), ToolTipText: shellClientToolTip(shellClientPuTTY, a.shellClients[shellClientPuTTY]), MinSize: Size{Width: 72, Height: buttonHeight}, MaxSize: Size{Width: 72}, OnClicked: func() { a.openShell(shellClientPuTTY) }},
+				PushButton{AssignTo: &a.xshellButton, Text: "Xshell", Font: buttonFont(), ToolTipText: shellClientToolTip(shellClientXshell, a.shellClients[shellClientXshell]), MinSize: Size{Width: 72, Height: buttonHeight}, MaxSize: Size{Width: 72}, OnClicked: func() { a.openShell(shellClientXshell) }},
+				PushButton{AssignTo: &a.secureButton, Text: "SecureCRT", Font: buttonFont(), ToolTipText: shellClientToolTip(shellClientSecureCRT, a.shellClients[shellClientSecureCRT]), MinSize: Size{Width: 96, Height: buttonHeight}, MaxSize: Size{Width: 96}, OnClicked: func() { a.openShell(shellClientSecureCRT) }},
 			}},
 			TextEdit{AssignTo: &a.log, ReadOnly: true, VScroll: true, HScroll: true, MinSize: Size{Height: logMinHeight}, MaxSize: Size{Height: logMaxHeight}},
 		},
@@ -355,12 +374,18 @@ func (a *app) run() error {
 	}
 	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
 		a.killCurrent()
+		a.killShellGateway()
 	})
 	a.remoteLB.DropFiles().Attach(a.remoteDropFiles)
 	a.summary.SetText(connectionSummary(a.opts))
 	a.localPath.SetText(a.localNav.Current)
 	if !a.rsyncAvailable {
 		a.appendLogLine("rsync disabled: local rsync binary was not found in supported locations")
+	}
+	for _, kind := range []shellClientKind{shellClientPuTTY, shellClientXshell, shellClientSecureCRT} {
+		if a.shellClients[kind] == "" {
+			a.appendLogLine(shellClientName(kind) + " not found; click its Open Shell button to locate the executable")
+		}
 	}
 	a.refreshLocal()
 	a.setButtons()
@@ -1405,6 +1430,198 @@ func (a *app) endOperation() {
 	a.setButtons()
 }
 
+func (a *app) openShell(kind shellClientKind) {
+	executable, ok := a.resolveShellClientExecutable(kind)
+	if !ok {
+		return
+	}
+	go func() {
+		if !a.startOperationWithStatus("opening " + shellClientName(kind)) {
+			return
+		}
+		defer a.endOperation()
+
+		shellGateway, err := a.ensureShellGateway()
+		if err != nil {
+			a.setStatus("open shell failed: " + err.Error())
+			return
+		}
+		args, err := buildExternalShellArgs(kind, shellGateway.info, shellGateway.user, shellGateway.password)
+		if err != nil {
+			a.setStatus("open shell failed: " + err.Error())
+			return
+		}
+		if err := launchExternalShell(executable, args); err != nil {
+			a.setStatus("open " + shellClientName(kind) + " failed: " + err.Error())
+			return
+		}
+		a.setStatus(shellClientName(kind) + " opened through local FlySSH gateway")
+	}()
+}
+
+func (a *app) resolveShellClientExecutable(kind shellClientKind) (string, bool) {
+	a.mu.Lock()
+	executable := a.shellClients[kind]
+	a.mu.Unlock()
+	if executable != "" {
+		return executable, true
+	}
+
+	exeName := shellClientExecutableName(kind)
+	if exeName == "" {
+		a.setStatus("unsupported shell client: " + string(kind))
+		return "", false
+	}
+	dlg := &walk.FileDialog{
+		Title:          "Locate " + shellClientName(kind),
+		InitialDirPath: filepath.Dir(a.exe),
+		Filter:         shellClientName(kind) + " (" + exeName + ")|" + exeName + "|Windows executables (*.exe)|*.exe",
+	}
+	accepted, err := dlg.ShowOpen(a.mw)
+	if err != nil {
+		a.setStatus("select " + shellClientName(kind) + " failed: " + err.Error())
+		return "", false
+	}
+	if !accepted {
+		return "", false
+	}
+	executable, err = validateShellClientExecutable(kind, dlg.FilePath)
+	if err != nil {
+		a.setStatus(err.Error())
+		return "", false
+	}
+
+	a.mu.Lock()
+	a.shellClients[kind] = executable
+	a.mu.Unlock()
+	if button := a.shellClientButton(kind); button != nil {
+		_ = button.SetToolTipText(shellClientToolTip(kind, executable))
+	}
+	a.appendLogLine(shellClientName(kind) + " selected for this GUI session: " + executable)
+	return executable, true
+}
+
+func (a *app) shellClientButton(kind shellClientKind) *walk.PushButton {
+	switch kind {
+	case shellClientPuTTY:
+		return a.puttyButton
+	case shellClientXshell:
+		return a.xshellButton
+	case shellClientSecureCRT:
+		return a.secureButton
+	default:
+		return nil
+	}
+}
+
+func (a *app) ensureShellGateway() (*activeShellGateway, error) {
+	a.mu.Lock()
+	if active := a.shellGateway; active != nil {
+		a.mu.Unlock()
+		return active, nil
+	}
+	a.mu.Unlock()
+
+	user, password, err := randomShellGatewayCredential()
+	if err != nil {
+		return nil, err
+	}
+	args, err := buildShellGatewayArgs(a.rawArgs, user, password)
+	if err != nil {
+		return nil, err
+	}
+	a.setStatus("starting local shell gateway; answer prompts in terminal if shown")
+	a.appendMainLogLine("command: " + formatChildCommand(a.exe, args))
+	child, stdout, stderr, err := startChild(a.exe, args)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	a.current = child
+	a.mu.Unlock()
+	a.appendMainLogLine("spawn: " + childDescription(args))
+
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stderr, "child stderr"), guiLogWriter{a: a}), stderr)
+	}()
+
+	reader := bufio.NewReader(stdout)
+	line, readErr := reader.ReadBytes('\n')
+	if readErr != nil {
+		child.kill()
+		waitErr := child.wait()
+		<-stderrDone
+		a.clearCurrentChild(child)
+		if waitErr != nil {
+			return nil, fmt.Errorf("shell gateway exited before ready: %w", waitErr)
+		}
+		return nil, fmt.Errorf("read shell gateway readiness: %w", readErr)
+	}
+
+	var info shellGatewayInfo
+	if err := json.Unmarshal(bytes.TrimSpace(line), &info); err != nil {
+		child.kill()
+		_ = child.wait()
+		<-stderrDone
+		a.clearCurrentChild(child)
+		return nil, fmt.Errorf("parse shell gateway readiness: %w", err)
+	}
+	if info.Port < 1 || info.Port > 65535 || len(info.HostKeys) == 0 {
+		child.kill()
+		_ = child.wait()
+		<-stderrDone
+		a.clearCurrentChild(child)
+		return nil, fmt.Errorf("invalid shell gateway readiness")
+	}
+
+	active := &activeShellGateway{child: child, info: info, user: user, password: password}
+	a.mu.Lock()
+	if a.current == child {
+		a.current = nil
+	}
+	a.shellGateway = active
+	a.mu.Unlock()
+	a.appendMainLogLine(fmt.Sprintf("shell gateway ready on 127.0.0.1:%d", info.Port))
+
+	stdoutDone := make(chan struct{})
+	go func() {
+		defer close(stdoutDone)
+		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stdout, "child stdout"), guiLogWriter{a: a}), reader)
+	}()
+	go a.waitShellGateway(active, stdoutDone, stderrDone)
+	return active, nil
+}
+
+func (a *app) waitShellGateway(active *activeShellGateway, stdoutDone, stderrDone <-chan struct{}) {
+	err := active.child.wait()
+	<-stdoutDone
+	<-stderrDone
+	code := 0
+	if err != nil {
+		code = 1
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		}
+	}
+	a.appendMainLogLine(fmt.Sprintf("shell gateway exit code: %d", code))
+	a.mu.Lock()
+	if a.shellGateway == active {
+		a.shellGateway = nil
+	}
+	a.mu.Unlock()
+	a.setButtons()
+}
+
+func (a *app) clearCurrentChild(child *childProcess) {
+	a.mu.Lock()
+	if a.current == child {
+		a.current = nil
+	}
+	a.mu.Unlock()
+}
+
 func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
 	a.appendMainLogLine("command: " + formatChildCommand(a.exe, args))
 	child, stdout, stderr, err := startChild(a.exe, args)
@@ -1509,6 +1726,15 @@ func (a *app) killCurrent() {
 	}
 }
 
+func (a *app) killShellGateway() {
+	a.mu.Lock()
+	active := a.shellGateway
+	a.mu.Unlock()
+	if active != nil {
+		active.child.kill()
+	}
+}
+
 func (a *app) setButtons() {
 	a.mu.Lock()
 	enabled := !a.busy && a.selection.valid() && a.remoteNav.Current != ""
@@ -1519,6 +1745,9 @@ func (a *app) setButtons() {
 	localRenameEnabled := localDeleteEnabled && selectionSingle(a.selection)
 	remoteRenameEnabled := remoteDeleteEnabled && selectionSingle(a.selection)
 	rsyncEnabled := a.rsyncAvailable
+	puttyEnabled := !a.busy
+	xshellEnabled := !a.busy
+	secureEnabled := !a.busy
 	selection := a.selection
 	a.mu.Unlock()
 	a.ui(func() {
@@ -1532,6 +1761,9 @@ func (a *app) setButtons() {
 		a.remoteRename.SetEnabled(remoteRenameEnabled)
 		a.localDelete.SetEnabled(localDeleteEnabled)
 		a.remoteDelete.SetEnabled(remoteDeleteEnabled)
+		a.puttyButton.SetEnabled(puttyEnabled)
+		a.xshellButton.SetEnabled(xshellEnabled)
+		a.secureButton.SetEnabled(secureEnabled)
 	})
 }
 
@@ -1776,6 +2008,8 @@ func childDescription(args []string) string {
 			return "remote HOME probe"
 		case arg == "--gui-internal-list" || strings.HasPrefix(arg, "--gui-internal-list="):
 			return "remote directory listing"
+		case arg == "--gui-internal-gateway" || strings.HasPrefix(arg, "--gui-internal-gateway="):
+			return "local shell gateway"
 		case arg == "--scp-upload":
 			return "SCP upload"
 		case arg == "--scp-download":

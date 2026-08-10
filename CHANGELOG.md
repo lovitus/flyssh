@@ -1,5 +1,26 @@
 # Changelog / 更新日志
 
+## v2.0.11 (2026-08-10)
+
+### Features / 新功能
+
+- **Open external SSH clients from the Windows transfer GUI** — The companion GUI now provides PuTTY, Xshell, and SecureCRT buttons. Each client connects through a loopback-only, ephemeral FlySSH SSH gateway that reuses the GUI's existing host, proxy, authentication, and multi-hop arguments / Windows 传输 GUI 现在可直接打开 PuTTY、Xshell 和 SecureCRT。外部客户端通过仅监听回环地址的临时 FlySSH SSH gateway 连接，并复用 GUI 已有的目标、代理、认证和多跳参数。
+- **Discover or select shell client executables** — FlySSH searches beside its own executable, Windows App Paths, `PATH`, and standard installation directories. If a client is not found, its button opens a file picker; the selected executable is retained only for the current GUI session / FlySSH 会在自身目录、Windows App Paths、`PATH` 和常见安装目录中查找终端客户端；未找到时按钮会打开文件选择框，所选路径只在当前 GUI 会话中保留。
+
+### Security and lifecycle / 安全与生命周期
+
+- The temporary gateway uses random per-GUI credentials, reports its generated host-key fingerprints for client pinning, and is terminated when the FlySSH GUI closes. Sensitive internal gateway arguments are redacted from logs and excluded from internal rsync payloads / 临时 gateway 使用每次 GUI 会话随机生成的凭据，并返回 host key 指纹供客户端校验；关闭 FlySSH GUI 时会终止 gateway。内部 gateway 敏感参数会从日志中脱敏，也不会进入 rsync internal payload。
+
+### Verification / 验证
+
+- `go test ./...`
+- `go vet ./...`
+- `go test -race ./pkg/gateway ./pkg/cli ./pkg/transfer ./pkg/wingui`
+- Windows amd64 cross-build and native Wingui tests
+- Windows UI automation for missing-client selection and session-only executable reuse
+
+---
+
 ## v2.0.10 (2026-07-22)
 
 ### Features / 新功能

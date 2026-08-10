@@ -1,9 +1,14 @@
 package wingui
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +16,101 @@ import (
 )
 
 const promptNotice = "Running; answer prompts in terminal if shown"
+
+type shellClientKind string
+
+const (
+	shellClientPuTTY     shellClientKind = "putty"
+	shellClientXshell    shellClientKind = "xshell"
+	shellClientSecureCRT shellClientKind = "securecrt"
+)
+
+type shellGatewayInfo struct {
+	Address  string   `json:"address"`
+	Port     int      `json:"port"`
+	HostKeys []string `json:"host_keys"`
+}
+
+func shellClientName(kind shellClientKind) string {
+	switch kind {
+	case shellClientPuTTY:
+		return "PuTTY"
+	case shellClientXshell:
+		return "Xshell"
+	case shellClientSecureCRT:
+		return "SecureCRT"
+	default:
+		return string(kind)
+	}
+}
+
+func randomShellGatewayCredential() (string, string, error) {
+	data := make([]byte, 24)
+	if _, err := rand.Read(data); err != nil {
+		return "", "", fmt.Errorf("generate shell gateway password: %w", err)
+	}
+	return "flyssh", base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func buildShellGatewayArgs(rawArgs []string, user, password string) ([]string, error) {
+	if user == "" || password == "" {
+		return nil, fmt.Errorf("empty shell gateway credential")
+	}
+	args := buildChildArgs(rawArgs)
+	if !containsArg(args, "--no-reconnect") {
+		args = append(args, "--no-reconnect")
+	}
+	spec := user + ":" + password + "@127.0.0.1:0"
+	return append(args, "--gui-internal-gateway", spec), nil
+}
+
+func containsArg(args []string, target string) bool {
+	for _, arg := range args {
+		if arg == target {
+			return true
+		}
+	}
+	return false
+}
+
+func buildExternalShellArgs(kind shellClientKind, info shellGatewayInfo, user, password string) ([]string, error) {
+	if info.Port < 1 || info.Port > 65535 {
+		return nil, fmt.Errorf("invalid shell gateway port: %d", info.Port)
+	}
+	if user == "" || password == "" {
+		return nil, fmt.Errorf("empty shell gateway credential")
+	}
+	host := "127.0.0.1"
+	port := strconv.Itoa(info.Port)
+	switch kind {
+	case shellClientPuTTY:
+		if len(info.HostKeys) == 0 {
+			return nil, fmt.Errorf("shell gateway did not report host keys")
+		}
+		args := []string{"-ssh", "-P", port, "-l", user, "-pw", password}
+		for _, fingerprint := range info.HostKeys {
+			if fingerprint == "" {
+				continue
+			}
+			args = append(args, "-hostkey", fingerprint)
+		}
+		if len(args) == 7 {
+			return nil, fmt.Errorf("shell gateway did not report usable host keys")
+		}
+		return append(args, "-noagent", "-noshare", host), nil
+	case shellClientXshell:
+		u := &url.URL{
+			Scheme: "ssh",
+			User:   url.UserPassword(user, password),
+			Host:   net.JoinHostPort(host, port),
+		}
+		return []string{"-url", u.String()}, nil
+	case shellClientSecureCRT:
+		return []string{"/T", "/SSH2", "/L", user, "/PASSWORD", password, "/P", port, host}, nil
+	default:
+		return nil, fmt.Errorf("unsupported shell client: %s", kind)
+	}
+}
 
 type remoteEntry struct {
 	Name  string `json:"name"`
@@ -153,7 +253,7 @@ func optionConsumesNextArg(arg string) bool {
 	case "--socks", "--socks-user", "--socks-pass",
 		"--password", "--password-env", "--password-file",
 		"--secondhost", "--secondhostkey", "--secondhostpass",
-		"--keys", "--passwords", "--gui-internal-list",
+		"--keys", "--passwords", "--gui-internal-list", "--gui-internal-gateway",
 		"--rsync-upload", "--rsync-download", "--scp-upload", "--scp-download",
 		"--reconnect-delay":
 		return true
@@ -440,11 +540,13 @@ func quoteDisplayArg(arg string) string {
 
 func redactDisplayArgs(args []string) []string {
 	sensitive := map[string]bool{
-		"--password":       true,
-		"--passwords":      true,
-		"--socks-pass":     true,
-		"--secondhost":     true,
-		"--secondhostpass": true,
+		"--password":             true,
+		"--passwords":            true,
+		"--socks-pass":           true,
+		"--secondhost":           true,
+		"--secondhostpass":       true,
+		"--ssh-gateway":          true,
+		"--gui-internal-gateway": true,
 	}
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {

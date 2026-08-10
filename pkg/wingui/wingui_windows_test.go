@@ -369,6 +369,13 @@ func TestChildDescriptionDetectsRemoteMkdir(t *testing.T) {
 	}
 }
 
+func TestChildDescriptionDetectsShellGateway(t *testing.T) {
+	args := []string{"user@host", "--gui-internal-gateway", "flyssh:secret@127.0.0.1:0"}
+	if got, want := childDescription(args), "local shell gateway"; got != want {
+		t.Fatalf("unexpected child description: got %q want %q", got, want)
+	}
+}
+
 func TestTerminalSourceWriterPrefixesLines(t *testing.T) {
 	var buf bytes.Buffer
 	w := newTerminalSourceWriter(&buf, "child stdout")
