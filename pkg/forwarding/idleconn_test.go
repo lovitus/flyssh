@@ -40,3 +40,11 @@ func TestIdleConnCloseWritePassesThrough(t *testing.T) {
 		t.Fatalf("CloseWrite count = %d, want 1", base.closeWriteCount)
 	}
 }
+
+func TestDefaultIdleTimeoutDoesNotWrapConnection(t *testing.T) {
+	base := &closeWriteTestConn{}
+	got := wrapIdleConn(base, DefaultIdleTimeout)
+	if got != base {
+		t.Fatalf("default idle timeout wrapped connection: got %T, want original %T", got, base)
+	}
+}

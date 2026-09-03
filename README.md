@@ -20,7 +20,7 @@ OpenSSH 无法原生通过 SOCKS5 代理连接，通常需要借助 Proxifier、
 - **Hash-based relay caching** — relay binary uploaded once per hash, skips re-upload / 基于哈希缓存，中继只上传一次
 - **Built-in file transfer modes** — native `scp` and managed `rsync` over the same route / 内置文件传输模式，支持原生 `scp` 和托管 `rsync`
 - **Auto-reconnect** — reconnects on connection loss when credentials are non-interactive / 非交互凭据下自动重连
-- **Idle timeout** — inactive forwarded connections auto-close after 5 minutes / 空闲连接 5 分钟自动关闭
+- **Persistent forwarding** — forwarded connections remain open while the SSH chain is alive; the existing keepalive and reconnect loop handle chain failures / 持久转发：SSH 链路存活期间不会因 FlySSH 固定的空闲计时器主动关闭转发连接；链路故障由现有保活和自动重连处理
 - **Single binary** — no dependencies, cross-platform (Windows/Linux/macOS, amd64/arm64) / 单文件无依赖，跨平台
 
 ---

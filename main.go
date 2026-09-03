@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -325,11 +326,13 @@ func runOnce(opts *cli.Options) (int, error) {
 
 	// Start port forwarding (all on finalClient)
 	forwardErrCh := make(chan error, len(opts.LocalForwards)+len(opts.RemoteForwards)+len(opts.DynamicForwards))
+	forwardCtx, stopForwards := context.WithCancel(context.Background())
+	defer stopForwards()
 	for _, lf := range opts.LocalForwards {
 		go func(forward cli.ForwardSpec) {
-			if err := forwarding.StartLocalForwardWithPolicy(finalClient, forward.Spec, opts.Verbose, forwarding.RelayPolicy(forward.RelayPolicy)); err != nil {
-				reportForwardError(forwardErrCh, "local", forward.Spec, err)
-			}
+			runForwardWithRetry(forwardCtx, "local", forward.Spec, func() error {
+				return forwarding.StartLocalForwardWithPolicy(finalClient, forward.Spec, opts.Verbose, forwarding.RelayPolicy(forward.RelayPolicy))
+			}, forwardErrCh)
 		}(lf)
 	}
 	for _, rf := range opts.RemoteForwards {
@@ -341,9 +344,9 @@ func runOnce(opts *cli.Options) (int, error) {
 	}
 	for _, dp := range opts.DynamicForwards {
 		go func(forward cli.ForwardSpec) {
-			if err := forwarding.StartDynamicForwardWithPolicy(finalClient, forward.Spec, opts.Verbose, forwarding.RelayPolicy(forward.RelayPolicy)); err != nil {
-				reportForwardError(forwardErrCh, "dynamic", forward.Spec, err)
-			}
+			runForwardWithRetry(forwardCtx, "dynamic", forward.Spec, func() error {
+				return forwarding.StartDynamicForwardWithPolicy(finalClient, forward.Spec, opts.Verbose, forwarding.RelayPolicy(forward.RelayPolicy))
+			}, forwardErrCh)
 		}(dp)
 	}
 

@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const DefaultIdleTimeout = 5 * time.Minute
+// DefaultIdleTimeout disables the forwarding connection watchdog. Forwarding
+// connections are closed with their owning SSH client or when either side of
+// the copy finishes, matching normal SSH forwarding semantics.
+const DefaultIdleTimeout time.Duration = 0
 
 // idleConn wraps a net.Conn and closes it if no Read/Write activity
 // occurs for the configured timeout duration.
@@ -26,7 +29,7 @@ type closeWriter interface {
 
 func wrapIdleConn(conn net.Conn, timeout time.Duration) net.Conn {
 	if timeout <= 0 {
-		timeout = DefaultIdleTimeout
+		return conn
 	}
 	ic := &idleConn{
 		Conn:    conn,

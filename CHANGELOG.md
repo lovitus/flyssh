@@ -1,5 +1,23 @@
 # Changelog / 更新日志
 
+## v2.0.12 (2026-09-03)
+
+### Fixes / 修复
+
+- **Keep long-lived forwarding sessions available by default** — Forwarded TCP connections are no longer closed by FlySSH's fixed five-minute idle watchdog. The SSH-chain keepalive and reconnect behavior remains responsible for the owning route, while the application connection is left to its own protocol / 默认保持长期转发会话可用：FlySSH 不再通过固定五分钟空闲 watchdog 主动关闭转发 TCP 连接；SSH 链路仍由保活和自动重连负责，业务连接由自身协议管理。
+- **Retry temporary local forwarding bind failures** — Local and dynamic forwarding listeners now retry transient bind/listen failures with bounded backoff, so a port briefly held by a previous process can recover without stopping an interactive shell / 修复本地转发监听端口被旧进程短暂占用时直接失败的问题：本地和动态转发 listener 现在会使用有上限的退避持续重试，不会因此打断交互式 shell。
+- **Reduce remote shell idle logout surprises** — Interactive sessions best-effort request `TMOUT=0` and `autologout=0` before starting the shell without injecting synthetic terminal input. Server-enforced policies remain authoritative / 减少远端 shell 因空闲自动注销带来的干扰：交互式会话启动前会尽力请求 `TMOUT=0` 和 `autologout=0`，不会注入伪造终端输入；服务器强制策略仍以远端为准。
+
+### Verification / 验证
+
+- `go test ./...`
+- `go test -race ./...`
+- `go vet ./...`
+- Windows amd64 and Darwin arm64 cross-builds
+- Release binary smoke test against a supplied SSH jump host
+
+---
+
 ## v2.0.11 (2026-08-10)
 
 ### Features / 新功能

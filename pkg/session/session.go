@@ -75,6 +75,7 @@ func RunInteractiveShell(client *ssh.Client, opts *cli.Options) (int, error) {
 
 	// Set environment variables
 	setEnvVars(session, opts)
+	setInteractiveShellIdlePolicy(session, opts.Verbose)
 
 	// Request agent forwarding if enabled
 	if opts.ForwardAgent {
@@ -285,6 +286,17 @@ func setEnvVars(session *ssh.Session, opts *cli.Options) {
 	for _, envPattern := range opts.SendEnv {
 		if val := os.Getenv(envPattern); val != "" {
 			session.Setenv(envPattern, val)
+		}
+	}
+}
+
+// setInteractiveShellIdlePolicy asks common interactive shells not to apply
+// their own prompt idle timer. Servers may reject these environment requests;
+// in that case the server-side shell policy remains authoritative.
+func setInteractiveShellIdlePolicy(session *ssh.Session, verbose bool) {
+	for _, name := range []string{"TMOUT", "autologout"} {
+		if err := session.Setenv(name, "0"); err != nil && verbose {
+			log.Printf("Interactive shell %s=0 request failed: %v", name, err)
 		}
 	}
 }
