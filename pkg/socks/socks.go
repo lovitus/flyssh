@@ -1,6 +1,7 @@
 package socks
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,6 +14,13 @@ import (
 // DialViaSocks5 establishes a TCP connection to target through a SOCKS5 proxy.
 // Supports optional username/password authentication (RFC 1928/1929).
 func DialViaSocks5(proxyAddr, targetAddr, username, password string) (net.Conn, error) {
+	return DialViaSocks5Context(context.Background(), proxyAddr, targetAddr, username, password)
+}
+
+// DialViaSocks5Context establishes a SOCKS5 connection and aborts the
+// handshake when ctx is cancelled. DialViaSocks5 keeps the original API and
+// behavior for callers that do not need cancellation.
+func DialViaSocks5Context(ctx context.Context, proxyAddr, targetAddr, username, password string) (net.Conn, error) {
 	// Parse target
 	host, portStr, err := net.SplitHostPort(targetAddr)
 	if err != nil {
@@ -24,10 +32,20 @@ func DialViaSocks5(proxyAddr, targetAddr, username, password string) (net.Conn, 
 	}
 
 	// Connect to proxy
-	conn, err := net.DialTimeout("tcp", proxyAddr, 30*time.Second)
+	dialer := net.Dialer{Timeout: 30 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to SOCKS5 proxy %s: %w", proxyAddr, err)
 	}
+	handshakeDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-handshakeDone:
+		}
+	}()
+	defer close(handshakeDone)
 
 	// SOCKS5 greeting
 	needAuth := username != ""
@@ -39,7 +57,7 @@ func DialViaSocks5(proxyAddr, targetAddr, username, password string) (net.Conn, 
 	}
 
 	greeting := make([]byte, 0, 3+len(authMethods))
-	greeting = append(greeting, 0x05)                // VER
+	greeting = append(greeting, 0x05)                   // VER
 	greeting = append(greeting, byte(len(authMethods))) // NMETHODS
 	greeting = append(greeting, authMethods...)
 

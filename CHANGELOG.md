@@ -1,5 +1,24 @@
 # Changelog / 更新日志
 
+## v2.0.13 (2026-09-03)
+
+### Library and lifecycle / 库与生命周期
+
+- **Add a reusable SSH route connector** — The new `pkg/connector` package exposes context-aware single- and multi-hop SSH dialing with SOCKS5 support, host-key pinning/known-hosts policies, trace callbacks, and deterministic chain cleanup / 新增可复用的 `pkg/connector`：提供支持 context、SOCKS5、多跳 SSH、host key pinning/known_hosts 策略、链路追踪和确定性资源清理的连接器。
+- **Make connector cancellation release in-flight resources** — SOCKS handshakes and tunneled hop dials now stop on cancellation or timeout instead of leaving late connections behind; agent sockets are closed with the owning chain / 修复 connector 在取消或超时后 SOCKS 握手、隧道 hop 拨号可能遗留后台连接的问题；agent socket 现在会随所属 chain 一起关闭。
+- **Add context-aware SCP cancellation plumbing** — `pkg/transfer.RunContext` can cancel an in-flight session transfer by closing its owning SSH client / 新增支持 context 的 `pkg/transfer.RunContext`，取消传输时会关闭所属 SSH client，确保阻塞中的会话传输可以退出。
+
+### Verification / 验证
+
+- `go test ./...`
+- `go test -race ./...`
+- `go vet ./...`
+- Windows amd64 and Darwin arm64 cross-builds
+- Connector single-hop and SOCKS cancellation integration tests
+- Release binary smoke test against a supplied SSH jump host
+
+---
+
 ## v2.0.12 (2026-09-03)
 
 ### Fixes / 修复
