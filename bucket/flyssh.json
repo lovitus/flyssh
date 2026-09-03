@@ -1,25 +1,25 @@
 {
-  "version": "2.0.13",
+  "version": "2.0.14",
   "description": "Portable SSH client with SOCKS, multi-hop, transfer GUI, gateway, and mosh.",
   "homepage": "https://github.com/lovitus/flyssh",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/lovitus/flyssh/releases/download/v2.0.13/flyssh-2.0.13-windows-amd64.exe.zip",
-      "hash": "5d571c4308de004229c01960ef86267b20dc605c2d6df4864f9589105a607b53",
+      "url": "https://github.com/lovitus/flyssh/releases/download/v2.0.14/flyssh-2.0.14-windows-amd64.exe.zip",
+      "hash": "195819850554a4a862ee075407f30e8ba5bb0f346e390bfc199d608a70974374",
       "bin": [
         [
-          "flyssh-2.0.13-windows-amd64.exe",
+          "flyssh-2.0.14-windows-amd64.exe",
           "flyssh"
         ]
       ]
     },
     "arm64": {
-      "url": "https://github.com/lovitus/flyssh/releases/download/v2.0.13/flyssh-2.0.13-windows-arm64.exe.zip",
-      "hash": "ba603548b018feba3a158dbe392f8cb1ff5a301f28dbe04b890b6cac54fa285b",
+      "url": "https://github.com/lovitus/flyssh/releases/download/v2.0.14/flyssh-2.0.14-windows-arm64.exe.zip",
+      "hash": "0a024423cff35317eae4055171217a050b237bede821a0b77e131ce5e9b6a47f",
       "bin": [
         [
-          "flyssh-2.0.13-windows-arm64.exe",
+          "flyssh-2.0.14-windows-arm64.exe",
           "flyssh"
         ]
       ]
