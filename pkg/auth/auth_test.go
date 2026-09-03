@@ -4,15 +4,19 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/flyssh/flyssh/internal/testkit"
 	"github.com/flyssh/flyssh/pkg/cli"
+	"github.com/flyssh/flyssh/pkg/config"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
@@ -161,6 +165,132 @@ func TestPromptBrokerProvidesPromptInput(t *testing.T) {
 	}
 	if string(password) != "secret-answer" {
 		t.Fatalf("unexpected password answer: %q", password)
+	}
+}
+
+func TestPasswordCacheIsScopedByResolvedEndpoint(t *testing.T) {
+	cache := NewPasswordCache()
+	first := &config.ResolvedConfig{User: "alice", Hostname: "host.example", Port: 22}
+	second := &config.ResolvedConfig{User: "bob", Hostname: "host.example", Port: 22}
+	third := &config.ResolvedConfig{User: "alice", Hostname: "host.example", Port: 2222}
+
+	cache.Store(first, "first-password")
+	if got, ok := cache.Get(first); !ok || got != "first-password" {
+		t.Fatalf("first cache = %q, %v", got, ok)
+	}
+	if _, ok := cache.Get(second); ok {
+		t.Fatal("password leaked across users")
+	}
+	if _, ok := cache.Get(third); ok {
+		t.Fatal("password leaked across ports")
+	}
+	if !cache.Forget(first) {
+		t.Fatal("expected cached password to be forgotten")
+	}
+	if _, ok := cache.Get(first); ok {
+		t.Fatal("forgotten password remained cached")
+	}
+}
+
+func TestBuildAuthMethodsCachesPromptedPassword(t *testing.T) {
+	server := testkit.StartSSHServer(t, map[string]string{"user": "prompted-password"})
+	host, portText, err := net.SplitHostPort(server.Addr)
+	if err != nil {
+		t.Fatalf("split test SSH server address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test SSH server port: %v", err)
+	}
+
+	oldReader := localPromptPasswordReader
+	defer func() { localPromptPasswordReader = oldReader }()
+	reads := 0
+	localPromptPasswordReader = func() ([]byte, error) {
+		reads++
+		return []byte("prompted-password"), nil
+	}
+
+	cache := NewPasswordCache()
+	cfg := &config.ResolvedConfig{User: "user", Hostname: host, Port: port, ConnectTimeout: time.Second}
+	opts := &cli.Options{}
+	first := dialWithCachedAuth(t, cfg, opts, cache)
+	_ = first.Close()
+	if reads != 1 {
+		t.Fatalf("first connection prompt reads = %d, want 1", reads)
+	}
+	if password, ok := cache.Get(cfg); !ok || password != "prompted-password" {
+		t.Fatalf("cached password = %q, %v", password, ok)
+	}
+
+	localPromptPasswordReader = func() ([]byte, error) {
+		t.Fatal("second connection unexpectedly prompted for password")
+		return nil, nil
+	}
+	second := dialWithCachedAuth(t, cfg, opts, cache)
+	_ = second.Close()
+}
+
+func TestCachedPasswordIsRemovedAfterAuthenticationFailure(t *testing.T) {
+	server := testkit.StartSSHServer(t, map[string]string{"user": "correct-password"})
+	host, portText, err := net.SplitHostPort(server.Addr)
+	if err != nil {
+		t.Fatalf("split test SSH server address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse test SSH server port: %v", err)
+	}
+
+	cache := NewPasswordCache()
+	cfg := &config.ResolvedConfig{User: "user", Hostname: host, Port: port, ConnectTimeout: time.Second}
+	cache.Store(cfg, "stale-password")
+	methods, err := BuildAuthMethodsWithPasswordCache(cfg, &cli.Options{}, cache)
+	if err != nil {
+		t.Fatalf("build auth methods: %v", err)
+	}
+	clientConfig := &ssh.ClientConfig{User: cfg.User, Auth: methods, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: cfg.ConnectTimeout}
+	conn, err := net.DialTimeout("tcp", server.Addr, time.Second)
+	if err != nil {
+		t.Fatalf("dial test SSH server: %v", err)
+	}
+	_, _, _, err = ssh.NewClientConn(conn, server.Addr, clientConfig)
+	_ = conn.Close()
+	if !IsAuthenticationFailure(err) {
+		t.Fatalf("handshake error = %v, want authentication failure", err)
+	}
+	cache.Forget(cfg)
+	if _, ok := cache.Get(cfg); ok {
+		t.Fatal("stale password remained cached after authentication failure")
+	}
+}
+
+func dialWithCachedAuth(t *testing.T, cfg *config.ResolvedConfig, opts *cli.Options, cache *PasswordCache) *ssh.Client {
+	t.Helper()
+	methods, err := BuildAuthMethodsWithPasswordCache(cfg, opts, cache)
+	if err != nil {
+		t.Fatalf("build auth methods: %v", err)
+	}
+	clientConfig := &ssh.ClientConfig{User: cfg.User, Auth: methods, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: cfg.ConnectTimeout}
+	address := net.JoinHostPort(cfg.Hostname, strconv.Itoa(cfg.Port))
+	conn, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		t.Fatalf("dial test SSH server: %v", err)
+	}
+	sshConn, channels, requests, err := ssh.NewClientConn(conn, address, clientConfig)
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("SSH handshake: %v", err)
+	}
+	return ssh.NewClient(sshConn, channels, requests)
+}
+
+func TestIsAuthenticationFailure(t *testing.T) {
+	if !IsAuthenticationFailure(errors.New("ssh: unable to authenticate, attempted methods [none password]")) {
+		t.Fatal("expected SSH authentication failure")
+	}
+	if IsAuthenticationFailure(errors.New("read tcp: connection reset by peer")) {
+		t.Fatal("network failure must not invalidate cached password")
 	}
 }
 

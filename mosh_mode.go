@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/flyssh/flyssh/pkg/auth"
 	"github.com/flyssh/flyssh/pkg/cli"
 	"github.com/flyssh/flyssh/pkg/moshsession"
 	"golang.org/x/crypto/ssh"
@@ -15,8 +16,9 @@ func runMosh(opts *cli.Options) (int, error) {
 	if reconnectDelay <= 0 {
 		reconnectDelay = 3 * time.Second
 	}
+	passwordCache := auth.NewPasswordCache()
 	connector := func() (*ssh.Client, func(), error) {
-		sshConfig, clients, finalClient, err := connectChain(opts)
+		sshConfig, clients, finalClient, err := connectChainWithPasswordCache(opts, passwordCache)
 		if err != nil {
 			return nil, nil, err
 		}

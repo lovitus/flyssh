@@ -115,9 +115,14 @@ func Run(ctx context.Context, connector Connector, opts Options) error {
 		if !retry {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "\rflyssh: mosh attach disconnected: %v; reconnecting in %v...\n", err, opts.ReconnectDelay)
-		for {
-			if err := waitReconnect(ctx, sigCh, opts.ReconnectDelay); err != nil {
+		for attempt := 0; ; attempt++ {
+			delay := reconnectDelayForAttempt(opts.ReconnectDelay, attempt)
+			if attempt == 0 {
+				fmt.Fprintf(os.Stderr, "\rflyssh: mosh attach disconnected: %v; reconnecting in %v...\n", err, delay)
+			} else {
+				fmt.Fprintf(os.Stderr, "\rflyssh: mosh reconnect attempt #%d in %v...\n", attempt+1, delay)
+			}
+			if err := waitReconnect(ctx, sigCh, delay); err != nil {
 				return err
 			}
 
@@ -143,6 +148,24 @@ func Run(ctx context.Context, connector Connector, opts Options) error {
 			break
 		}
 	}
+}
+
+func reconnectDelayForAttempt(base time.Duration, attempt int) time.Duration {
+	if base <= 0 {
+		base = 3 * time.Second
+	}
+	cap := time.Minute
+	if base > cap {
+		cap = base
+	}
+	delay := base
+	for i := 0; i < attempt && delay < cap; i++ {
+		if delay > cap/2 {
+			return cap
+		}
+		delay *= 2
+	}
+	return delay
 }
 
 func waitAttach(ctx context.Context, sigCh <-chan os.Signal, wait func() error, closeAttach func()) (error, bool) {

@@ -220,8 +220,8 @@ Easy Forwarding (GOST-style):
   Example: -rtcp://0.0.0.0:8082/127.0.0.1:80  remote :8082 → local :80
 
 Reconnect:
-  --no-reconnect          Disable auto-reconnect (enabled by default with --password)
-  --reconnect-delay N     Seconds between reconnect attempts (default: 3)
+  --no-reconnect          Disable automatic reconnect
+  --reconnect-delay N     Initial retry seconds (doubles; cap is at least 60s; default: 3)
 
 File Transfer:
   --rsync-upload '...'    Run rsync upload using flyssh-managed transport

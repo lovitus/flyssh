@@ -19,7 +19,7 @@ OpenSSH 无法原生通过 SOCKS5 代理连接，通常需要借助 Proxifier、
 - **Multiplexed relay** — bypasses `MaxSessions` limits, all forwards over 1 SSH session / 复用中继绕过 MaxSessions 限制
 - **Hash-based relay caching** — relay binary uploaded once per hash, skips re-upload / 基于哈希缓存，中继只上传一次
 - **Built-in file transfer modes** — native `scp` and managed `rsync` over the same route / 内置文件传输模式，支持原生 `scp` 和托管 `rsync`
-- **Auto-reconnect** — reconnects on connection loss when credentials are non-interactive / 非交互凭据下自动重连
+- **Auto-reconnect** — reconnects on connection loss and reuses passwords entered during the current process / 断线自动重连，并复用当前进程中已输入的密码
 - **Persistent forwarding** — forwarded connections remain open while the SSH chain is alive; the existing keepalive and reconnect loop handle chain failures / 持久转发：SSH 链路存活期间不会因 FlySSH 固定的空闲计时器主动关闭转发连接；链路故障由现有保活和自动重连处理
 - **Single binary** — no dependencies, cross-platform (Windows/Linux/macOS, amd64/arm64) / 单文件无依赖，跨平台
 
@@ -295,9 +295,12 @@ flyssh u1:p1@hop1 u2:p2@hop2 -ltcp://:5001/127.0.0.1:5000,:5002/192.168.1.100:50
 
 ### Auto-Reconnect / 自动重连
 
-Enabled by default when non-interactive credentials are provided (password, key, etc.).
+Enabled by default for regular shell, forwarding, and SSH gateway sessions. A
+password entered at the terminal is kept only in this FlySSH process and is
+reused for reconnects. Transfers remain one-shot and do not reconnect.
 
-当提供非交互式凭据时默认启用（密码、密钥等）。
+普通 shell、端口转发和 SSH gateway 默认启用自动重连。终端输入的密码只保存在当前 FlySSH
+进程内，并用于后续重连；传输仍为一次性操作，不会自动重连。
 
 ```bash
 # Auto-reconnects on disconnect / 断线自动重连
@@ -306,7 +309,7 @@ flyssh user:password@hostname -ltcp://:8080/remote:80
 # Disable / 禁用
 flyssh user:password@hostname --no-reconnect
 
-# Custom delay / 自定义延迟
+# Custom initial delay / 自定义初始延迟
 flyssh user:password@hostname --reconnect-delay 10
 ```
 
@@ -314,6 +317,13 @@ flyssh user:password@hostname --reconnect-delay 10
 
 - In interactive shell mode, reconnect creates a fresh shell session.  
   交互 shell 模式下，重连后会创建新的 shell 会话。
+- Retry waits use bounded exponential backoff: the default sequence is `3s`,
+  `6s`, `12s`, `24s`, `48s`, then `60s` for later failures. A successful full
+  SSH chain resets the delay. `--reconnect-delay N` sets the first delay and
+  later delays double; the cap is `max(60s, N)`.
+  重试采用有上限的指数退避：默认依次为 `3s`、`6s`、`12s`、`24s`、`48s`，之后为
+  `60s`；完整 SSH 链路成功后会重置。`--reconnect-delay N` 设置第一次等待，之后倍增，
+  上限至少为 `60s`。
 - In command mode (`flyssh host "cmd"`), a reconnect re-runs the command.  
   命令模式（`flyssh host "cmd"`）下，重连会重新执行该命令。
 - If you need strict one-shot command behavior, disable reconnect with `--no-reconnect`.  

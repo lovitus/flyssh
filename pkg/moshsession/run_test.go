@@ -156,6 +156,18 @@ func TestWaitReconnectCanBeInterrupted(t *testing.T) {
 	}
 }
 
+func TestReconnectDelayForAttempt(t *testing.T) {
+	want := []time.Duration{3 * time.Second, 6 * time.Second, 12 * time.Second, 24 * time.Second, 48 * time.Second, time.Minute, time.Minute}
+	for attempt, expected := range want {
+		if got := reconnectDelayForAttempt(0, attempt); got != expected {
+			t.Fatalf("attempt %d delay = %v, want %v", attempt, got, expected)
+		}
+	}
+	if got := reconnectDelayForAttempt(10*time.Second, 2); got != 40*time.Second {
+		t.Fatalf("custom delay = %v, want 40s", got)
+	}
+}
+
 func TestInitialMoshClearSequence(t *testing.T) {
 	if got, want := string(initialMoshClearSequence()), "\x1b[0m\x1b[2J\x1b[H"; got != want {
 		t.Fatalf("clear sequence = %q, want %q", got, want)

@@ -1,5 +1,22 @@
 # Changelog / 更新日志
 
+## v2.0.14 (2026-09-04)
+
+### Fixes / 修复
+
+- **Reconnect after an interactive password login** — Shell, forwarding, SSH gateway, and mosh reconnect paths now retain passwords entered during the current FlySSH process and reuse them after a network loss. Cached credentials never leave process memory; an authentication rejection removes the affected endpoint's cached password before the next retry / 修复交互式密码登录后的自动重连：shell、转发、SSH gateway 和 mosh 重连路径现在会保留当前 FlySSH 进程内输入的密码，并在网络断开后复用。缓存凭据不会离开进程内存；认证被拒绝时，会在下一次重试前移除对应 endpoint 的缓存密码。
+- **Use bounded exponential reconnect backoff** — Retries now wait `3s`, `6s`, `12s`, `24s`, `48s`, and then `60s` by default, resetting after a fully established route. `--reconnect-delay` remains the initial delay and later attempts double up to the cap / 使用有上限的指数重连退避：默认等待 `3s`、`6s`、`12s`、`24s`、`48s`，之后为 `60s`；完整链路成功后重置。`--reconnect-delay` 仍表示初始等待，后续尝试倍增到上限。
+
+### Verification / 验证
+
+- `go test ./...`
+- `go test -race ./...`
+- `go vet ./...`
+- Windows amd64 and Darwin arm64 cross-builds
+- Interactive password cache reconnect smoke test through a controlled SOCKS disconnect
+
+---
+
 ## v2.0.13 (2026-09-03)
 
 ### Library and lifecycle / 库与生命周期

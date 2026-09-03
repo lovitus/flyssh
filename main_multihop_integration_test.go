@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/flyssh/flyssh/internal/testkit"
+	"github.com/flyssh/flyssh/pkg/auth"
 	"github.com/flyssh/flyssh/pkg/cli"
 	"github.com/flyssh/flyssh/pkg/config"
 	"github.com/flyssh/flyssh/pkg/forwarding"
@@ -120,6 +121,60 @@ func TestKeepAliveInterval(t *testing.T) {
 	})
 	if interval != 60*time.Second || warn {
 		t.Fatalf("unexpected configured keepalive interval: interval=%v warn=%v", interval, warn)
+	}
+}
+
+func TestForgetCachedPasswordOnAuthenticationFailure(t *testing.T) {
+	cache := auth.NewPasswordCache()
+	cfg := &config.ResolvedConfig{User: "user", Hostname: "host", Port: 22}
+	cache.Store(cfg, "stale-password")
+	forgetCachedPasswordOnAuthFailure(cache, cfg, fmt.Errorf("ssh handshake: ssh: unable to authenticate, attempted methods [password]"))
+	if _, ok := cache.Get(cfg); ok {
+		t.Fatal("authentication failure did not clear cached password")
+	}
+
+	cache.Store(cfg, "still-valid")
+	forgetCachedPasswordOnAuthFailure(cache, cfg, fmt.Errorf("read tcp: connection reset by peer"))
+	if password, ok := cache.Get(cfg); !ok || password != "still-valid" {
+		t.Fatalf("network error should preserve cache: %q, %v", password, ok)
+	}
+}
+
+func TestConnectFirstHostForgetsRejectedCachedPassword(t *testing.T) {
+	server := testkit.StartSSHServer(t, map[string]string{"user": "correct-password"})
+	host, portText, err := net.SplitHostPort(server.Addr)
+	if err != nil {
+		t.Fatalf("split server address: %v", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("parse server port: %v", err)
+	}
+
+	cache := auth.NewPasswordCache()
+	cfg := &config.ResolvedConfig{
+		User: "user", Hostname: host, Port: port,
+		ConnectTimeout: time.Second, KnownHostsFile: t.TempDir() + "/known_hosts",
+	}
+	cache.Store(cfg, "stale-password")
+	_, err = connectFirstHostWithPasswordCache(cfg, &cli.Options{StrictHostKey: "no"}, cache)
+	if err == nil || !auth.IsAuthenticationFailure(err) {
+		t.Fatalf("connect error = %v, want authentication failure", err)
+	}
+	if _, ok := cache.Get(cfg); ok {
+		t.Fatal("rejected password remained cached")
+	}
+}
+
+func TestShouldAutoReconnectAllowsInteractiveSessions(t *testing.T) {
+	if !shouldAutoReconnect(&cli.Options{}) {
+		t.Fatal("regular interactive session should reconnect by default")
+	}
+	if shouldAutoReconnect(&cli.Options{NoReconnect: true}) {
+		t.Fatal("--no-reconnect must remain authoritative")
+	}
+	if shouldAutoReconnect(&cli.Options{ScpUpload: "source target"}) {
+		t.Fatal("one-shot transfers must not reconnect")
 	}
 }
 

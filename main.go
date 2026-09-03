@@ -56,7 +56,9 @@ func scrubArgs() {
 	}
 }
 
-// shouldAutoReconnect returns true if credentials are non-interactive
+// shouldAutoReconnect keeps normal long-running SSH modes available after a
+// route failure. Passwords entered at the terminal are held only in the
+// process-local auth cache used by the reconnect path.
 func shouldAutoReconnect(opts *cli.Options) bool {
 	if opts.HasTransferMode() {
 		return false
@@ -64,16 +66,7 @@ func shouldAutoReconnect(opts *cli.Options) bool {
 	if opts.NoReconnect {
 		return false
 	}
-	if opts.Password != "" || opts.PasswordsCSV != "" {
-		return true
-	}
-	if len(opts.IdentityFiles) > 0 || opts.KeysCSV != "" {
-		return true
-	}
-	if opts.SecondHostKey != "" {
-		return true
-	}
-	return false
+	return true
 }
 
 func cloneCLIOptions(opts *cli.Options) *cli.Options {
@@ -242,11 +235,9 @@ func main() {
 		os.Exit(exitCode)
 	}
 
-	reconnectDelay := time.Duration(opts.ReconnectDelay) * time.Second
-	if reconnectDelay <= 0 {
-		reconnectDelay = 3 * time.Second
-	}
 	autoReconnect := shouldAutoReconnect(opts)
+	passwordCache := auth.NewPasswordCache()
+	reconnectBackoff := newReconnectBackoff(time.Duration(opts.ReconnectDelay) * time.Second)
 
 	// Setup signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -260,7 +251,7 @@ func main() {
 	reconnectAttempt := 0
 	for {
 		cycleStarted := time.Now()
-		exitCode, sessionErr := runOnce(opts)
+		exitCode, sessionErr := runOnceWithPasswordCache(opts, passwordCache, reconnectBackoff.Reset)
 
 		if sessionErr == nil {
 			// Clean exit (user typed exit, command finished normally)
@@ -276,9 +267,10 @@ func main() {
 
 		firstAttempt = false
 		reconnectAttempt++
+		delay := reconnectBackoff.Next()
 		fmt.Fprintf(os.Stderr, "\nflyssh: connection lost after %s: %v\n", time.Since(cycleStarted).Truncate(time.Millisecond), sessionErr)
-		fmt.Fprintf(os.Stderr, "flyssh: reconnect attempt #%d in %v...\n", reconnectAttempt, reconnectDelay)
-		time.Sleep(reconnectDelay)
+		fmt.Fprintf(os.Stderr, "flyssh: reconnect attempt #%d in %v...\n", reconnectAttempt, delay)
+		time.Sleep(delay)
 	}
 }
 
@@ -289,6 +281,10 @@ func rawArgSnapshot(args []string) []string {
 // runOnce performs a single connect-session cycle.
 // Returns (exitCode, nil) for clean exit, (exitCode, err) for connection loss / error.
 func runOnce(opts *cli.Options) (int, error) {
+	return runOnceWithPasswordCache(opts, nil, nil)
+}
+
+func runOnceWithPasswordCache(opts *cli.Options, passwordCache *auth.PasswordCache, connected func()) (int, error) {
 	transferSpec, err := transfer.FromOptions(opts)
 	if err != nil {
 		return 255, err
@@ -297,11 +293,14 @@ func runOnce(opts *cli.Options) (int, error) {
 		return transfer.RunLocalRsync(opts, transferSpec)
 	}
 
-	sshConfig, allClients, finalClient, err := connectChain(opts)
+	sshConfig, allClients, finalClient, err := connectChainWithPasswordCache(opts, passwordCache)
 	if err != nil {
 		return 255, err
 	}
 	defer closeClients(allClients)
+	if connected != nil {
+		connected()
+	}
 
 	// Start keepalive on all clients in the chain
 	stopKeepalive := make(chan struct{})
@@ -394,6 +393,10 @@ func runOnce(opts *cli.Options) (int, error) {
 }
 
 func connectChain(opts *cli.Options) (*config.ResolvedConfig, []*ssh.Client, *ssh.Client, error) {
+	return connectChainWithPasswordCache(opts, nil)
+}
+
+func connectChainWithPasswordCache(opts *cli.Options, passwordCache *auth.PasswordCache) (*config.ResolvedConfig, []*ssh.Client, *ssh.Client, error) {
 	effectiveOpts, hops, err := buildConnectionPlan(opts)
 	if err != nil {
 		return nil, nil, nil, err
@@ -404,7 +407,7 @@ func connectChain(opts *cli.Options) (*config.ResolvedConfig, []*ssh.Client, *ss
 		log.Printf("[host1] Resolved: user=%s host=%s port=%d", sshConfig.User, sshConfig.Hostname, sshConfig.Port)
 	}
 
-	firstClient, err := connectFirstHost(sshConfig, effectiveOpts)
+	firstClient, err := connectFirstHostWithPasswordCache(sshConfig, effectiveOpts, passwordCache)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("host1: %w", err)
 	}
@@ -416,7 +419,7 @@ func connectChain(opts *cli.Options) (*config.ResolvedConfig, []*ssh.Client, *ss
 	finalClient := firstClient
 
 	for i, hop := range hops {
-		nextClient, hopErr := connectHop(finalClient, hop, effectiveOpts, i+2)
+		nextClient, hopErr := connectHopWithPasswordCache(finalClient, hop, effectiveOpts, i+2, passwordCache)
 		if hopErr != nil {
 			closeClients(allClients)
 			return nil, nil, nil, fmt.Errorf("hop%d: %w", i+2, hopErr)
@@ -558,9 +561,20 @@ func waitAnyClient(clients []*ssh.Client) <-chan error {
 	return ch
 }
 
+func forgetCachedPasswordOnAuthFailure(cache *auth.PasswordCache, cfg *config.ResolvedConfig, err error) {
+	if !auth.IsAuthenticationFailure(err) || !cache.Forget(cfg) {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "flyssh: cached password rejected for %s@%s; it will be requested again after reconnect backoff\n", cfg.User, cfg.Hostname)
+}
+
 // connectFirstHost establishes the SSH connection to the first host
 func connectFirstHost(sshConfig *config.ResolvedConfig, opts *cli.Options) (*ssh.Client, error) {
-	authMethods, err := auth.BuildAuthMethods(sshConfig, opts)
+	return connectFirstHostWithPasswordCache(sshConfig, opts, nil)
+}
+
+func connectFirstHostWithPasswordCache(sshConfig *config.ResolvedConfig, opts *cli.Options, passwordCache *auth.PasswordCache) (*ssh.Client, error) {
+	authMethods, err := auth.BuildAuthMethodsWithPasswordCache(sshConfig, opts, passwordCache)
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w", err)
 	}
@@ -579,7 +593,7 @@ func connectFirstHost(sshConfig *config.ResolvedConfig, opts *cli.Options) (*ssh
 	addr := net.JoinHostPort(sshConfig.Hostname, strconv.Itoa(sshConfig.Port))
 
 	if sshConfig.ProxyJump != "" && sshConfig.SocksProxy == "" {
-		return connectViaJumpHost(sshConfig, clientConfig, opts)
+		return connectViaJumpHost(sshConfig, clientConfig, opts, passwordCache)
 	}
 
 	var conn net.Conn
@@ -601,6 +615,7 @@ func connectFirstHost(sshConfig *config.ResolvedConfig, opts *cli.Options) (*ssh
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientConfig)
 	if err != nil {
 		conn.Close()
+		forgetCachedPasswordOnAuthFailure(passwordCache, sshConfig, err)
 		return nil, fmt.Errorf("ssh handshake %s: %w", addr, err)
 	}
 	return ssh.NewClient(sshConn, chans, reqs), nil
@@ -648,10 +663,14 @@ func resolveHopSSHConfig(opts *cli.Options, hop cli.HopSpec) *config.ResolvedCon
 // connectHop connects to a hop through the previous SSH client.
 // hopNum is for logging (2 = second host, 3 = third, etc.)
 func connectHop(prevClient *ssh.Client, hop cli.HopSpec, opts *cli.Options, hopNum int) (*ssh.Client, error) {
+	return connectHopWithPasswordCache(prevClient, hop, opts, hopNum, nil)
+}
+
+func connectHopWithPasswordCache(prevClient *ssh.Client, hop cli.HopSpec, opts *cli.Options, hopNum int, passwordCache *auth.PasswordCache) (*ssh.Client, error) {
 	addr := net.JoinHostPort(hop.Host, strconv.Itoa(hop.Port))
 	hopCfg := resolveHopSSHConfig(opts, hop)
 
-	hopAuthMethods, err := auth.BuildAuthMethodsForHop(hopCfg, opts, hop.Password)
+	hopAuthMethods, err := auth.BuildAuthMethodsForHopWithPasswordCache(hopCfg, opts, hop.Password, passwordCache)
 	if err != nil {
 		return nil, fmt.Errorf("hop%d auth: %w", hopNum, err)
 	}
@@ -679,6 +698,7 @@ func connectHop(prevClient *ssh.Client, hop cli.HopSpec, opts *cli.Options, hopN
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, hopClientConfig)
 	if err != nil {
 		conn.Close()
+		forgetCachedPasswordOnAuthFailure(passwordCache, hopCfg, err)
 		return nil, fmt.Errorf("ssh handshake %s: %w", addr, err)
 	}
 
@@ -689,7 +709,7 @@ func connectHop(prevClient *ssh.Client, hop cli.HopSpec, opts *cli.Options, hopN
 	return client, nil
 }
 
-func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.ClientConfig, opts *cli.Options) (*ssh.Client, error) {
+func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.ClientConfig, opts *cli.Options, passwordCache *auth.PasswordCache) (*ssh.Client, error) {
 	jumps := strings.Split(sshConfig.ProxyJump, ",")
 
 	var currentClient *ssh.Client
@@ -697,13 +717,14 @@ func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.Clie
 		jump = strings.TrimSpace(jump)
 		jumpHost, jumpPort, jumpUser := parseJumpSpec(jump, sshConfig.User)
 
-		jumpAuthMethods, err := auth.BuildAuthMethods(&config.ResolvedConfig{
+		jumpResolvedConfig := &config.ResolvedConfig{
 			User:           jumpUser,
 			Hostname:       jumpHost,
 			Port:           jumpPort,
 			IdentityFiles:  sshConfig.IdentityFiles,
 			ConnectTimeout: sshConfig.ConnectTimeout,
-		}, opts)
+		}
+		jumpAuthMethods, err := auth.BuildAuthMethodsWithPasswordCache(jumpResolvedConfig, opts, passwordCache)
 		if err != nil {
 			return nil, fmt.Errorf("jump host %s auth: %w", jump, err)
 		}
@@ -735,6 +756,7 @@ func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.Clie
 			sshConn, chans, reqs, err := ssh.NewClientConn(conn, jumpAddr, jumpConfig)
 			if err != nil {
 				conn.Close()
+				forgetCachedPasswordOnAuthFailure(passwordCache, jumpResolvedConfig, err)
 				return nil, fmt.Errorf("ssh to jump host %s: %w", jump, err)
 			}
 			currentClient = ssh.NewClient(sshConn, chans, reqs)
@@ -749,6 +771,7 @@ func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.Clie
 			if err != nil {
 				conn.Close()
 				currentClient.Close()
+				forgetCachedPasswordOnAuthFailure(passwordCache, jumpResolvedConfig, err)
 				return nil, fmt.Errorf("ssh through jump %s: %w", jump, err)
 			}
 			currentClient = ssh.NewClient(sshConn, chans, reqs)
@@ -770,6 +793,7 @@ func connectViaJumpHost(sshConfig *config.ResolvedConfig, targetConfig *ssh.Clie
 	if err != nil {
 		conn.Close()
 		currentClient.Close()
+		forgetCachedPasswordOnAuthFailure(passwordCache, sshConfig, err)
 		return nil, fmt.Errorf("ssh to target through jump chain: %w", err)
 	}
 	return ssh.NewClient(sshConn, chans, reqs), nil

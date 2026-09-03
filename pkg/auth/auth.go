@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/flyssh/flyssh/pkg/cli"
 	"github.com/flyssh/flyssh/pkg/config"
@@ -23,23 +25,88 @@ var promptInputOpener = openPromptInput
 var localPromptLineReader = readLocalPromptLine
 var localPromptPasswordReader = readLocalPromptPassword
 
+// PasswordCache holds passwords entered during one FlySSH process lifetime.
+// It deliberately has no persistence: a reconnect may reuse a successful
+// terminal prompt, but a later FlySSH invocation starts without these values.
+type PasswordCache struct {
+	mu       sync.RWMutex
+	password map[string]string
+}
+
+func NewPasswordCache() *PasswordCache {
+	return &PasswordCache{password: make(map[string]string)}
+}
+
+func (c *PasswordCache) Get(cfg *config.ResolvedConfig) (string, bool) {
+	if c == nil || cfg == nil {
+		return "", false
+	}
+	c.mu.RLock()
+	password, ok := c.password[passwordCacheKey(cfg)]
+	c.mu.RUnlock()
+	return password, ok
+}
+
+func (c *PasswordCache) Store(cfg *config.ResolvedConfig, password string) {
+	if c == nil || cfg == nil || password == "" {
+		return
+	}
+	c.mu.Lock()
+	c.password[passwordCacheKey(cfg)] = password
+	c.mu.Unlock()
+}
+
+// Forget removes the cached password for cfg and reports whether one existed.
+func (c *PasswordCache) Forget(cfg *config.ResolvedConfig) bool {
+	if c == nil || cfg == nil {
+		return false
+	}
+	key := passwordCacheKey(cfg)
+	c.mu.Lock()
+	_, existed := c.password[key]
+	delete(c.password, key)
+	c.mu.Unlock()
+	return existed
+}
+
+func passwordCacheKey(cfg *config.ResolvedConfig) string {
+	return cfg.User + "@" + strings.ToLower(cfg.Hostname) + ":" + strconv.Itoa(cfg.Port)
+}
+
 // BuildAuthMethods constructs SSH auth methods from config and options
 func BuildAuthMethods(cfg *config.ResolvedConfig, opts *cli.Options) ([]ssh.AuthMethod, error) {
-	return buildAuthMethodsWithPassword(cfg, opts, opts.Password)
+	return BuildAuthMethodsWithPasswordCache(cfg, opts, nil)
+}
+
+// BuildAuthMethodsWithPasswordCache is BuildAuthMethods with an optional
+// process-local cache for passwords obtained from an interactive prompt.
+func BuildAuthMethodsWithPasswordCache(cfg *config.ResolvedConfig, opts *cli.Options, cache *PasswordCache) ([]ssh.AuthMethod, error) {
+	return buildAuthMethodsWithPassword(cfg, opts, opts.Password, cache)
 }
 
 // BuildAuthMethodsForSecondHost constructs auth methods for the second hop
 func BuildAuthMethodsForSecondHost(cfg *config.ResolvedConfig, opts *cli.Options) ([]ssh.AuthMethod, error) {
-	return buildAuthMethodsWithPassword(cfg, opts, opts.SecondHostPassword)
+	return BuildAuthMethodsForHopWithPasswordCache(cfg, opts, opts.SecondHostPassword, nil)
 }
 
 // BuildAuthMethodsForHop constructs auth methods for an arbitrary hop with an explicit password.
 func BuildAuthMethodsForHop(cfg *config.ResolvedConfig, opts *cli.Options, password string) ([]ssh.AuthMethod, error) {
-	return buildAuthMethodsWithPassword(cfg, opts, password)
+	return BuildAuthMethodsForHopWithPasswordCache(cfg, opts, password, nil)
 }
 
-func buildAuthMethodsWithPassword(cfg *config.ResolvedConfig, opts *cli.Options, password string) ([]ssh.AuthMethod, error) {
+// BuildAuthMethodsForHopWithPasswordCache builds auth for an individual hop.
+// Explicit hop credentials always win over values cached from a prior prompt.
+func BuildAuthMethodsForHopWithPasswordCache(cfg *config.ResolvedConfig, opts *cli.Options, password string, cache *PasswordCache) ([]ssh.AuthMethod, error) {
+	return buildAuthMethodsWithPassword(cfg, opts, password, cache)
+}
+
+func buildAuthMethodsWithPassword(cfg *config.ResolvedConfig, opts *cli.Options, password string, cache *PasswordCache) ([]ssh.AuthMethod, error) {
 	var methods []ssh.AuthMethod
+	if password == "" {
+		if cached, ok := cache.Get(cfg); ok {
+			password = cached
+		}
+	}
 
 	// 1. If explicit password is provided, prioritize it
 	if password != "" {
@@ -88,7 +155,7 @@ func buildAuthMethodsWithPassword(cfg *config.ResolvedConfig, opts *cli.Options,
 
 	// 4. If no explicit password, add interactive methods
 	if password == "" {
-		methods = append(methods, ssh.KeyboardInteractive(keyboardInteractiveChallenge))
+		methods = append(methods, ssh.KeyboardInteractive(keyboardInteractiveChallengeWithCache(cfg, cache)))
 		methods = append(methods, ssh.PasswordCallback(func() (string, error) {
 			fmt.Fprintf(os.Stderr, "%s@%s's password: ", cfg.User, cfg.Hostname)
 			pass, err := readPromptPassword()
@@ -96,11 +163,26 @@ func buildAuthMethodsWithPassword(cfg *config.ResolvedConfig, opts *cli.Options,
 			if err != nil {
 				return "", err
 			}
-			return string(pass), nil
+			value := string(pass)
+			cache.Store(cfg, value)
+			return value, nil
 		}))
 	}
 
 	return methods, nil
+}
+
+// IsAuthenticationFailure identifies the errors returned after a server has
+// rejected every offered authentication method. It is intentionally narrow so
+// transient network failures do not discard a useful in-memory password.
+func IsAuthenticationFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unable to authenticate") ||
+		strings.Contains(message, "permission denied") ||
+		strings.Contains(message, "authentication failed")
 }
 
 // GetHostKeyCallback returns an appropriate host key callback.
@@ -446,30 +528,49 @@ func loadPrivateKey(path string, opts *cli.Options) (ssh.Signer, error) {
 }
 
 func keyboardInteractiveChallenge(name, instruction string, questions []string, echos []bool) ([]string, error) {
-	if name != "" {
-		fmt.Fprintln(os.Stderr, name)
-	}
-	if instruction != "" {
-		fmt.Fprintln(os.Stderr, instruction)
-	}
+	return keyboardInteractiveChallengeWithCache(nil, nil)(name, instruction, questions, echos)
+}
 
-	answers := make([]string, len(questions))
-	for i, q := range questions {
-		fmt.Fprint(os.Stderr, q)
-		if echos[i] {
-			answer, err := readPromptLine()
-			if err != nil {
-				return nil, err
+func keyboardInteractiveChallengeWithCache(cfg *config.ResolvedConfig, cache *PasswordCache) ssh.KeyboardInteractiveChallenge {
+	return func(name, instruction string, questions []string, echos []bool) ([]string, error) {
+		if cacheableKeyboardPasswordPrompt(questions, echos) {
+			if password, ok := cache.Get(cfg); ok {
+				return []string{password}, nil
 			}
-			answers[i] = answer
-		} else {
-			pass, err := readPromptPassword()
-			fmt.Fprintln(os.Stderr)
-			if err != nil {
-				return nil, err
-			}
-			answers[i] = string(pass)
 		}
+
+		if name != "" {
+			fmt.Fprintln(os.Stderr, name)
+		}
+		if instruction != "" {
+			fmt.Fprintln(os.Stderr, instruction)
+		}
+
+		answers := make([]string, len(questions))
+		for i, q := range questions {
+			fmt.Fprint(os.Stderr, q)
+			if echos[i] {
+				answer, err := readPromptLine()
+				if err != nil {
+					return nil, err
+				}
+				answers[i] = answer
+			} else {
+				pass, err := readPromptPassword()
+				fmt.Fprintln(os.Stderr)
+				if err != nil {
+					return nil, err
+				}
+				answers[i] = string(pass)
+			}
+		}
+		if cacheableKeyboardPasswordPrompt(questions, echos) {
+			cache.Store(cfg, answers[0])
+		}
+		return answers, nil
 	}
-	return answers, nil
+}
+
+func cacheableKeyboardPasswordPrompt(questions []string, echos []bool) bool {
+	return len(questions) == 1 && len(echos) == 1 && !echos[0]
 }
