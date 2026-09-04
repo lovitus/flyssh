@@ -14,6 +14,7 @@
 - `go vet ./...`
 - Windows amd64 and Darwin arm64 cross-builds
 - Interactive password cache reconnect smoke test through a controlled SOCKS disconnect
+- GitHub CI subprocess E2E for interactive password reconnect and a forwarding connection idle beyond the former five-minute timeout
 
 ---
 

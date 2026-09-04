@@ -55,6 +55,11 @@ jobs:
       - name: Test suite
         run: go test ./...
 
+      - name: Reconnect and forwarding end-to-end
+        env:
+          FLYSSH_E2E: "1"
+        run: go test ./e2e -count=1 -v -timeout 9m
+
       - name: Race detector
         run: go test -race ./...
 
