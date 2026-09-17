@@ -8,24 +8,19 @@ permissions:
 jobs:
   apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Apply exact reviewed patch and verify portable tests
+      - name: Add the release changelog
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git hash-object pkg/wingui/wingui_windows.go)" = fd335030260527f7f37d7709279b5fdfa1b733bd
+          test "$(git hash-object CHANGELOG.md)" = f44bf7312d9e5f18df967d2ea33154ffea4cb69c
           git apply --check .github/patches/gui-file-hashes.patch
           git apply .github/patches/gui-file-hashes.patch
-          test "$(git hash-object pkg/wingui/wingui_windows.go)" = 57dac9a84096ef797c22123470c85f5cf6ad8607
-          gofmt -w pkg/wingui/wingui_windows.go pkg/wingui/hash*.go e2e/wingui_hash_windows_test.go
-          go test ./pkg/wingui -count=1
+          python3 -m py_compile .github/scripts/request_release.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add pkg/wingui/wingui_windows.go pkg/wingui/hash*.go e2e/wingui_hash_windows_test.go
-          git commit -m 'feat(wingui): wire file hash buttons and preserve complete subprocess output'
+          git add CHANGELOG.md
+          git commit -m 'docs: record file hashing and release verification for v2.0.15'
           git push origin HEAD:codex/gui-file-hashes
