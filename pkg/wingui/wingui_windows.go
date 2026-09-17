@@ -5,6 +5,7 @@ package wingui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -237,6 +238,8 @@ type app struct {
 	rsyncButton  *walk.PushButton
 	localNewDir  *walk.PushButton
 	remoteNewDir *walk.PushButton
+	localHash    *walk.PushButton
+	remoteHash   *walk.PushButton
 	localRename  *walk.PushButton
 	remoteRename *walk.PushButton
 	localDelete  *walk.PushButton
@@ -257,6 +260,7 @@ type app struct {
 	busy              bool
 	rsyncAvailable    bool
 	current           *childProcess
+	hashCancel        context.CancelFunc
 	shellClients      map[shellClientKind]string
 	shellGateway      *activeShellGateway
 	suppressSelection bool
@@ -319,6 +323,7 @@ func (a *app) run() error {
 							}
 						}},
 						PushButton{AssignTo: &a.localNewDir, Text: "+Dir", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: func() { a.newDirectory(sideLocal) }},
+						PushButton{AssignTo: &a.localHash, Text: "Hash", Font: buttonFont(), Enabled: false, ToolTipText: "Calculate checksums for selected files", MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: func() { a.hashSelection(sideLocal) }},
 						PushButton{AssignTo: &a.localRename, Text: "MV", Font: buttonFont(), MinSize: Size{Width: 48, Height: buttonHeight}, MaxSize: Size{Width: 48}, OnClicked: func() { a.renameSelection(sideLocal) }},
 						PushButton{AssignTo: &a.localDelete, Text: "Del", Font: buttonFont(), MinSize: Size{Width: 48, Height: buttonHeight}, MaxSize: Size{Width: 48}, OnClicked: func() { a.deleteSelection(sideLocal) }},
 					}},
@@ -350,6 +355,7 @@ func (a *app) run() error {
 							}
 						}},
 						PushButton{AssignTo: &a.remoteNewDir, Text: "+Dir", Font: buttonFont(), MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: func() { a.newDirectory(sideRemote) }},
+						PushButton{AssignTo: &a.remoteHash, Text: "Hash", Font: buttonFont(), Enabled: false, ToolTipText: "Calculate checksums for selected files", MinSize: Size{Width: 64, Height: buttonHeight}, MaxSize: Size{Width: 64}, OnClicked: func() { a.hashSelection(sideRemote) }},
 						PushButton{AssignTo: &a.remoteRename, Text: "MV", Font: buttonFont(), MinSize: Size{Width: 48, Height: buttonHeight}, MaxSize: Size{Width: 48}, OnClicked: func() { a.renameSelection(sideRemote) }},
 						PushButton{AssignTo: &a.remoteDelete, Text: "Del", Font: buttonFont(), MinSize: Size{Width: 48, Height: buttonHeight}, MaxSize: Size{Width: 48}, OnClicked: func() { a.deleteSelection(sideRemote) }},
 					}},
@@ -1649,8 +1655,9 @@ func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
 		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stderr, "child stderr"), guiLogWriter{a: a}), stderr)
 	}()
 
-	err = child.wait()
+	// Drain both pipes before Wait closes them, including the last hash result.
 	wg.Wait()
+	err = child.wait()
 	code := 0
 	if err != nil {
 		code = 1
@@ -1720,7 +1727,11 @@ func createKillOnCloseJob() (windows.Handle, error) {
 func (a *app) killCurrent() {
 	a.mu.Lock()
 	child := a.current
+	cancel := a.hashCancel
 	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if child != nil {
 		child.kill()
 	}
@@ -1742,6 +1753,8 @@ func (a *app) setButtons() {
 	remoteNewDirEnabled := !a.busy && a.remoteNav.Current != ""
 	localDeleteEnabled := !a.busy && a.selection.valid() && a.selection.Side == sideLocal
 	remoteDeleteEnabled := !a.busy && a.selection.valid() && a.selection.Side == sideRemote && a.remoteNav.Current != ""
+	localHashEnabled := hashSelectionEnabled(a.selection, sideLocal, a.busy, a.localNav.Current)
+	remoteHashEnabled := hashSelectionEnabled(a.selection, sideRemote, a.busy, a.remoteNav.Current)
 	localRenameEnabled := localDeleteEnabled && selectionSingle(a.selection)
 	remoteRenameEnabled := remoteDeleteEnabled && selectionSingle(a.selection)
 	rsyncEnabled := a.rsyncAvailable
@@ -1757,6 +1770,8 @@ func (a *app) setButtons() {
 		a.rsyncButton.SetEnabled(enabled && rsyncEnabled)
 		a.localNewDir.SetEnabled(localNewDirEnabled)
 		a.remoteNewDir.SetEnabled(remoteNewDirEnabled)
+		a.localHash.SetEnabled(localHashEnabled)
+		a.remoteHash.SetEnabled(remoteHashEnabled)
 		a.localRename.SetEnabled(localRenameEnabled)
 		a.remoteRename.SetEnabled(remoteRenameEnabled)
 		a.localDelete.SetEnabled(localDeleteEnabled)
@@ -2018,6 +2033,8 @@ func childDescription(args []string) string {
 			return "rsync upload"
 		case arg == "--rsync-download":
 			return "rsync download"
+		case strings.Contains(arg, "flyssh-hash"):
+			return "remote file hashes"
 		case strings.Contains(arg, `rm -rf -- "$1"`):
 			return "remote delete"
 		case strings.Contains(arg, `mv -- "$1" "$2"`):

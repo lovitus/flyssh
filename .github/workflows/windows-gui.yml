@@ -1,0 +1,90 @@
+name: Windows GUI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-gui:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build embedded relay binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          relay_dir="pkg/forwarding/relaybin"
+          mkdir -p "${relay_dir}"
+          targets=("linux amd64" "linux arm64" "linux 386" "linux arm 6" "darwin amd64" "darwin arm64" "freebsd amd64")
+          for t in "${targets[@]}"; do
+            read -r goos goarch goarm <<<"${t}"
+            name="relay-${goos}-${goarch}"
+            GOOS="${goos}" GOARCH="${goarch}" GOARM="${goarm:-6}" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w" -o "${relay_dir}/${name}" ./cmd/relay
+            gzip -9 -c "${relay_dir}/${name}" > "${relay_dir}/${name}.gz"
+            rm "${relay_dir}/${name}"
+          done
+
+      - name: Windows GUI unit tests
+        run: go test ./pkg/wingui -v -count=1 -timeout 3m
+
+      - name: Build Windows release-mode executables
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/akavel/rsrc@latest
+          mkdir -p dist validation
+          version="dev-${GITHUB_SHA:0:12}"
+          for arch in amd64 arm64; do
+            rsrc -manifest flyssh.manifest -arch "${arch}" -o "rsrc_windows_${arch}.syso"
+            GOOS=windows GOARCH="${arch}" CGO_ENABLED=0 go build -trimpath \
+              -ldflags "-s -w -X main.Version=${version}" -o "dist/flyssh-windows-${arch}.exe" .
+          done
+
+      - name: Package and extract the binary under test
+        shell: pwsh
+        run: |
+          foreach ($arch in @('amd64', 'arm64')) {
+            Compress-Archive -Path "dist/flyssh-windows-$arch.exe" -DestinationPath "dist/flyssh-windows-$arch.exe.zip"
+          }
+          Expand-Archive -Path dist/flyssh-windows-amd64.exe.zip -DestinationPath validation/extracted
+          $binary = (Resolve-Path validation/extracted/flyssh-windows-amd64.exe).Path
+          "FLYSSH_GUI_BINARY=$binary" >> $env:GITHUB_ENV
+          "FLYSSH_GUI_TEST_ARTIFACTS=$env:GITHUB_WORKSPACE/validation" >> $env:GITHUB_ENV
+          & $binary --version
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged executable failed version smoke test' }
+          Get-FileHash dist/*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_.Path))" } | Set-Content dist/checksums.txt
+
+      - name: Test the packaged executable over real SSH and native Windows controls
+        shell: pwsh
+        run: |
+          go test ./e2e -run '^TestWindowsGUIHashes$' -count=1 -v -timeout 5m 2>&1 | Tee-Object validation/gui-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload binaries and validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flyssh-windows-${{ github.sha }}
+          path: |
+            dist/*.zip
+            dist/checksums.txt
+            validation/*.log
+            validation/*.txt
+            validation/*.png
+          if-no-files-found: error
+          retention-days: 14

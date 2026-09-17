@@ -1,0 +1,108 @@
+name: Requested release and binary verification
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/release-request.json]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: requested-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      contents: write
+      actions: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Wait for CI, tag the exact commit and run the existing Release workflow
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/request_release.py
+      - name: Download and smoke-test the published Linux amd64 binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir validation-linux
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir validation-linux \
+            --pattern "flyssh-${version}-linux-amd64.tar.gz" --pattern checksums.txt
+          cd validation-linux
+          sha256sum --check --ignore-missing checksums.txt
+          tar -xzf "flyssh-${version}-linux-amd64.tar.gz"
+          "./flyssh-${version}-linux-amd64" --version | tee version.txt
+          grep -F "$version" version.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: published-linux-smoke-${{ github.sha }}
+          path: validation-linux/*.txt
+          if-no-files-found: ignore
+
+  verify-windows:
+    needs: publish
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Download, verify and extract the published Windows amd64 binary
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.publish.outputs.tag }}
+        run: |
+          $version = $env:TAG.Substring(1)
+          $archive = "flyssh-$version-windows-amd64.exe.zip"
+          New-Item -ItemType Directory -Path validation/downloaded -Force | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --dir validation/downloaded --pattern $archive --pattern checksums.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Release download failed' }
+          $lines = @(Get-Content validation/downloaded/checksums.txt | Where-Object { $_.EndsWith("  $archive") })
+          if ($lines.Count -ne 1) { throw 'Release checksum entry missing or duplicated' }
+          $expected = $lines[0].Split(' ')[0]
+          $actual = (Get-FileHash "validation/downloaded/$archive" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw 'Published Windows ZIP checksum mismatch' }
+          "$actual  $archive" | Set-Content validation/verified-checksum.txt
+          Expand-Archive "validation/downloaded/$archive" -DestinationPath validation/extracted
+          $binary = (Resolve-Path "validation/extracted/flyssh-$version-windows-amd64.exe").Path
+          "FLYSSH_GUI_BINARY=$binary" >> $env:GITHUB_ENV
+          "FLYSSH_GUI_TEST_ARTIFACTS=$env:GITHUB_WORKSPACE/validation" >> $env:GITHUB_ENV
+          $versionOutput = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or -not ($versionOutput -match [regex]::Escape($version))) { throw 'Published binary version mismatch' }
+          $versionOutput | Set-Content validation/version.txt
+      - name: Test the downloaded release through native GUI controls and real SSH
+        shell: pwsh
+        run: |
+          go test ./e2e -run '^TestWindowsGUIHashes$' -count=1 -v -timeout 5m 2>&1 | Tee-Object validation/gui-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: published-windows-validation-${{ github.sha }}
+          path: |
+            validation/*.txt
+            validation/*.log
+            validation/*.png
+          if-no-files-found: error
+          retention-days: 30
