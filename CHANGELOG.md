@@ -1,5 +1,21 @@
 # Changelog / 更新日志
 
+## v2.0.15 (2026-09-17)
+
+### Features / 新功能
+
+- Add **Hash** between **+Dir** and **MV** in both Windows transfer panes. Select one or more files and choose MD5, SHA-1, SHA-224, SHA-256 (default), SHA-384 or SHA-512. Every result and filename is printed in the Log and terminal / Windows 文件传输窗口两侧新增 Hash 按钮，支持多文件及六种哈希算法，结果显示在日志和终端中。
+- Stream local files with bounded memory and hash remote files on the server over the existing SSH route. Report per-file failures without discarding other results; disable hashing for folders and while busy / 本地流式计算，远程在服务器端计算；逐文件报告错误，不影响其余结果。
+- Drain subprocess output before waiting so the last checksum is not truncated / 修复子进程输出末尾可能被截断的问题。
+
+### Verification / 验证
+
+- Portable checksum vectors, cancellation, quoting, fallback, failure and batching tests.
+- Native Windows selection and subprocess-output tests, plus packaged-executable GUI tests against a loopback SSH fixture for all six methods in both panes.
+- Release requests wait for Linux and Windows CI, publish through the existing release pipeline, then download, checksum-verify and execute the published Linux and Windows amd64 binaries.
+
+---
+
 ## v2.0.14 (2026-09-04)
 
 ### Fixes / 修复
