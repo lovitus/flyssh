@@ -358,12 +358,12 @@ func (b *hashLockedBuffer) String() string {
 var hashUser32 = syscall.NewLazyDLL("user32.dll")
 
 type hashUIDriver struct {
-	t                                    *testing.T
-	pid                                  uint32
-	windowCallback, controlCallback      uintptr
+	t                                   *testing.T
+	pid                                 uint32
+	windowCallback, controlCallback     uintptr
 	wantedTitle, wantedClass, wantedText string
-	foundWindow                          uintptr
-	foundControls                        []uintptr
+	foundWindow                         uintptr
+	foundControls                       []uintptr
 }
 
 // Windows callback thunks cannot be freed. Allocate only two per test, rather
@@ -373,7 +373,20 @@ func newHashUIDriver(t *testing.T, pid uint32) *hashUIDriver {
 	u.windowCallback = syscall.NewCallback(func(hwnd, _ uintptr) uintptr {
 		var windowPID uint32
 		hashUser32.NewProc("GetWindowThreadProcessId").Call(hwnd, uintptr(unsafe.Pointer(&windowPID)))
-		if windowPID == u.pid && u.text(hwnd) == u.wantedTitle {
+		if windowPID != u.pid {
+			return 1
+		}
+		visible, _, _ := hashUser32.NewProc("IsWindowVisible").Call(hwnd)
+		if visible == 0 {
+			return 1
+		}
+		// GetWindowTextW reads a different process's cached window caption.
+		// Sending WM_GETTEXT while enumerating startup/hidden windows can
+		// block on a thread that has not entered its message loop yet.
+		// Child-control text still uses SendMessageTimeout in u.text below.
+		caption := make([]uint16, 256)
+		hashUser32.NewProc("GetWindowTextW").Call(hwnd, uintptr(unsafe.Pointer(&caption[0])), uintptr(len(caption)))
+		if syscall.UTF16ToString(caption) == u.wantedTitle {
 			u.foundWindow = hwnd
 			return 0
 		}
@@ -467,7 +480,7 @@ func (u *hashUIDriver) waitDialog() uintptr {
 func (u *hashUIDriver) logText(main uintptr) string {
 	for _, edit := range u.controls(main, "Edit", "") {
 		style, _, _ := hashUser32.NewProc("GetWindowLongW").Call(edit, ^uintptr(15)) // GWL_STYLE
-		if style&4 != 0 {                                                            // ES_MULTILINE
+		if style&4 != 0 {                                                       // ES_MULTILINE
 			return u.text(edit)
 		}
 	}
