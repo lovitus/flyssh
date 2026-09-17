@@ -358,12 +358,12 @@ func (b *hashLockedBuffer) String() string {
 var hashUser32 = syscall.NewLazyDLL("user32.dll")
 
 type hashUIDriver struct {
-	t                                   *testing.T
-	pid                                 uint32
-	windowCallback, controlCallback     uintptr
+	t                                    *testing.T
+	pid                                  uint32
+	windowCallback, controlCallback      uintptr
 	wantedTitle, wantedClass, wantedText string
-	foundWindow                         uintptr
-	foundControls                       []uintptr
+	foundWindow                          uintptr
+	foundControls                        []uintptr
 }
 
 // Windows callback thunks cannot be freed. Allocate only two per test, rather
@@ -467,7 +467,7 @@ func (u *hashUIDriver) waitDialog() uintptr {
 func (u *hashUIDriver) logText(main uintptr) string {
 	for _, edit := range u.controls(main, "Edit", "") {
 		style, _, _ := hashUser32.NewProc("GetWindowLongW").Call(edit, ^uintptr(15)) // GWL_STYLE
-		if style&4 != 0 {                                                       // ES_MULTILINE
+		if style&4 != 0 {                                                            // ES_MULTILINE
 			return u.text(edit)
 		}
 	}
