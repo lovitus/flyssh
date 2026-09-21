@@ -1,1 +1,1 @@
-{"tag":"v2.0.16","verification":"Name/Size/Date sorting in both directions and both panes; five packaged GUI runs and downloaded release-binary tests."}
+{"tag":"v2.0.16","verification":"Name/Size/Date sorting and hashes in both panes; native message buffer lifetime regression; twenty packaged GUI runs and downloaded release-binary verification."}

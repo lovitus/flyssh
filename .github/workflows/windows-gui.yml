@@ -69,10 +69,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Packaged executable failed version smoke test' }
           Get-FileHash dist/*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_.Path))" } | Set-Content dist/checksums.txt
 
-      - name: Test the packaged executable over real SSH and native Windows controls (five runs)
+      - name: Test the packaged executable over real SSH and native Windows controls (twenty runs)
         shell: pwsh
         run: |
-          go test ./e2e -run '^TestWindowsGUI(Hashes|Sorting)$' -count=5 -v -timeout 5m 2>&1 | Tee-Object validation/gui-test.log
+          go test ./e2e -run '^TestWindowsGUI' -count=20 -v -timeout 10m 2>&1 | Tee-Object validation/gui-test.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload binaries and validation evidence

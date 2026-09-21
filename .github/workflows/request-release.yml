@@ -94,7 +94,7 @@ jobs:
       - name: Test the downloaded release through native GUI controls and real SSH
         shell: pwsh
         run: |
-          go test ./e2e -run '^TestWindowsGUI(Hashes|Sorting)$' -count=1 -v -timeout 5m 2>&1 | Tee-Object validation/gui-test.log
+          go test ./e2e -run '^TestWindowsGUI' -count=1 -v -timeout 5m 2>&1 | Tee-Object validation/gui-test.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         if: always()

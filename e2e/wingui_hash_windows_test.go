@@ -191,6 +191,9 @@ func TestWindowsGUIHashes(t *testing.T) {
 	if !strings.Contains(ui.logText(main), "not a regular file:") {
 		t.Fatal("missing-file diagnostic was not displayed")
 	}
+	if t.Failed() {
+		return
+	}
 	t.Log("Packaged Windows executable: layout, selection, chooser/cancel, all six algorithms on both panes, SSH execution, and partial failures passed")
 }
 
@@ -358,12 +361,13 @@ func (b *hashLockedBuffer) String() string {
 var hashUser32 = syscall.NewLazyDLL("user32.dll")
 
 type hashUIDriver struct {
-	t                                   *testing.T
-	pid                                 uint32
-	windowCallback, controlCallback     uintptr
+	t                                    *testing.T
+	pid                                  uint32
+	windowCallback, controlCallback      uintptr
 	wantedTitle, wantedClass, wantedText string
-	foundWindow                         uintptr
-	foundControls                       []uintptr
+	foundWindow                          uintptr
+	foundControls                        []uintptr
+	beforeSend                           func() // Test-only stack-growth hook.
 }
 
 // Windows callback thunks cannot be freed. Allocate only two per test, rather
@@ -414,8 +418,17 @@ func (u *hashUIDriver) wait(description string, predicate func() bool) {
 	}
 	u.t.Fatalf("timed out waiting for %s", description)
 }
+
+// send is a syscall wrapper: pointer-valued uintptr arguments must escape
+// to the heap and remain alive while Helper/native calls can grow the stack.
+// Keep conversions at call sites, directly inside the argument list.
+//
+//go:uintptrescapes
 func (u *hashUIDriver) send(hwnd, message, wparam, lparam uintptr) uintptr {
 	u.t.Helper()
+	if u.beforeSend != nil {
+		u.beforeSend()
+	}
 	var result uintptr
 	ok, _, err := hashUser32.NewProc("SendMessageTimeoutW").Call(hwnd, message, wparam, lparam, 2, 2000, uintptr(unsafe.Pointer(&result)))
 	if ok == 0 {
@@ -480,7 +493,7 @@ func (u *hashUIDriver) waitDialog() uintptr {
 func (u *hashUIDriver) logText(main uintptr) string {
 	for _, edit := range u.controls(main, "Edit", "") {
 		style, _, _ := hashUser32.NewProc("GetWindowLongW").Call(edit, ^uintptr(15)) // GWL_STYLE
-		if style&4 != 0 {                                                       // ES_MULTILINE
+		if style&4 != 0 {                                                            // ES_MULTILINE
 			return u.text(edit)
 		}
 	}
