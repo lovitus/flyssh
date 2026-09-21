@@ -9,6 +9,8 @@ jobs:
   regression:
     runs-on: windows-latest
     timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -23,14 +25,14 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p = Path('e2e/wingui_hash_windows_test.go')
-          s = p.read_text()
+          s = p.read_text(encoding='utf-8')
           marker = '\tfoundControls                       []uintptr\n'
           assert s.count(marker) == 1
           s = s.replace(marker, marker + '\tbeforeSend                          func() // Test-only stack-growth hook.\n')
           marker = 'func (u *hashUIDriver) send(hwnd, message, wparam, lparam uintptr) uintptr {\n\tu.t.Helper()\n'
           assert s.count(marker) == 1
           s = s.replace(marker, marker + '\tif u.beforeSend != nil {\n\t\tu.beforeSend()\n\t}\n')
-          p.write_text(s)
+          p.write_text(s, encoding='utf-8')
           PY
           set +e
           go test ./e2e -run '^TestWindowsGUIMessageBufferLifetime$' -count=1 -v -timeout 1m > before.log 2>&1
@@ -42,11 +44,11 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p = Path('e2e/wingui_hash_windows_test.go')
-          s = p.read_text()
+          s = p.read_text(encoding='utf-8')
           marker = 'func (u *hashUIDriver) send(hwnd, message, wparam, lparam uintptr) uintptr {'
           s = s.replace(marker, '// send is a syscall wrapper: pointer-valued uintptr arguments must escape\n// to the heap and remain alive while Helper/native calls can grow the stack.\n// Keep conversions at call sites, directly inside the argument list.\n//\n//go:uintptrescapes\n' + marker)
           s = s.replace('\tt.Log("Packaged Windows executable:', '\tif t.Failed() {\n\t\treturn\n\t}\n\tt.Log("Packaged Windows executable:')
-          p.write_text(s)
+          p.write_text(s, encoding='utf-8')
           PY
           gofmt -w e2e/wingui_hash_windows_test.go e2e/wingui_message_windows_test.go
           go test ./e2e -run '^TestWindowsGUIMessageBufferLifetime$' -count=20 -v -timeout 2m > after.log 2>&1
