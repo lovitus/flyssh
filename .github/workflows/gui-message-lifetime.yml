@@ -1,0 +1,66 @@
+name: Verify native GUI message buffer lifetime
+on:
+  push:
+    branches: [codex/gui-message-lifetime]
+    paths: [.github/workflows/gui-message-lifetime.yml, e2e/wingui_message_windows_test.go]
+permissions:
+  contents: write
+jobs:
+  regression:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Reproduce the unsafe-wrapper failure and verify the fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object e2e/wingui_hash_windows_test.go)" = 7cbea7c42f169b435c4b836b8ffde1f3472f2b47
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('e2e/wingui_hash_windows_test.go')
+          s = p.read_text()
+          marker = '\tfoundControls                       []uintptr\n'
+          assert s.count(marker) == 1
+          s = s.replace(marker, marker + '\tbeforeSend                          func() // Test-only stack-growth hook.\n')
+          marker = 'func (u *hashUIDriver) send(hwnd, message, wparam, lparam uintptr) uintptr {\n\tu.t.Helper()\n'
+          assert s.count(marker) == 1
+          s = s.replace(marker, marker + '\tif u.beforeSend != nil {\n\t\tu.beforeSend()\n\t}\n')
+          p.write_text(s)
+          PY
+          set +e
+          go test ./e2e -run '^TestWindowsGUIMessageBufferLifetime$' -count=1 -v -timeout 1m > before.log 2>&1
+          baseline=$?
+          set -e
+          cat before.log
+          test "$baseline" -ne 0
+          grep -F 'native buffer mismatch after stack growth' before.log
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('e2e/wingui_hash_windows_test.go')
+          s = p.read_text()
+          marker = 'func (u *hashUIDriver) send(hwnd, message, wparam, lparam uintptr) uintptr {'
+          s = s.replace(marker, '// send is a syscall wrapper: pointer-valued uintptr arguments must escape\n// to the heap and remain alive while Helper/native calls can grow the stack.\n// Keep conversions at call sites, directly inside the argument list.\n//\n//go:uintptrescapes\n' + marker)
+          s = s.replace('\tt.Log("Packaged Windows executable:', '\tif t.Failed() {\n\t\treturn\n\t}\n\tt.Log("Packaged Windows executable:')
+          p.write_text(s)
+          PY
+          gofmt -w e2e/wingui_hash_windows_test.go e2e/wingui_message_windows_test.go
+          go test ./e2e -run '^TestWindowsGUIMessageBufferLifetime$' -count=20 -v -timeout 2m > after.log 2>&1
+          cat after.log
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add e2e/wingui_hash_windows_test.go e2e/wingui_message_windows_test.go
+          git commit -m 'test(wingui): keep native message buffers alive across Go stack growth'
+          git push origin HEAD:codex/gui-message-lifetime
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-message-lifetime-regression
+          path: |
+            before.log
+            after.log
+          if-no-files-found: ignore
