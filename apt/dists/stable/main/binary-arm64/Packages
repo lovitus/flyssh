@@ -1,13 +1,13 @@
 Package: flyssh
-Version: 2.0.15-1
+Version: 2.0.16-1
 Architecture: arm64
 Maintainer: FlySSH Maintainers <noreply@github.com>
 Installed-Size: 16768
-Filename: pool/main/f/flyssh/flyssh_2.0.15_arm64.deb
-Size: 13682000
-MD5sum: f5a83008f46f507998ac96e2af174ac4
-SHA1: 806a47f4f8691b4f1ac65253c9855149fc759942
-SHA256: 6641927b02dcd0d775eb266bc2a2023406d383d2ebf6280e5b60fdba6a6b9d4d
+Filename: pool/main/f/flyssh/flyssh_2.0.16_arm64.deb
+Size: 13681414
+MD5sum: e845033676415c5547571a4d6f69ca99
+SHA1: 43842e17d0e25112d664cdec00ef6167ec6cd222
+SHA256: 62d48ae99a8c663ec3f6e9c495d2b22640073a0ad232af95b4784cdf91aa8786
 Section: utils
 Priority: optional
 Homepage: https://github.com/lovitus/flyssh
