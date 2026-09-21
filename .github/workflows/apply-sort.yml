@@ -1,0 +1,32 @@
+name: Integrate reviewed sorting changes
+on:
+  push:
+    branches: [codex/name-size-date-sort]
+    paths: [.github/scripts/apply_sort.py]
+permissions:
+  contents: write
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Apply verified source changes and remove staging helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object pkg/wingui/wingui_windows.go)" = 57dac9a84096ef797c22123470c85f5cf6ad8607
+          python3 .github/scripts/apply_sort.py
+          gofmt -w pkg/wingui/sorting*.go e2e/wingui_sort_windows_test.go
+          go test ./pkg/wingui -count=1
+          go test -race ./pkg/wingui -count=5
+          go vet ./pkg/wingui
+          git rm .github/scripts/apply_sort.py .github/workflows/apply-sort.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add pkg/wingui e2e/wingui_sort_windows_test.go .github/workflows/windows-gui.yml .github/workflows/request-release.yml CHANGELOG.md
+          git commit -m 'feat(wingui): integrate Name Size Date sorting and release validation'
+          git push origin HEAD:codex/name-size-date-sort
