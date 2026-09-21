@@ -35,14 +35,6 @@ const (
 	sideRemote side = "remote"
 )
 
-type sortMode string
-
-const (
-	sortByName sortMode = "name"
-	sortByTime sortMode = "time"
-	sortBySize sortMode = "size"
-)
-
 const (
 	buttonHeight         = 44
 	transferButtonHeight = 56
@@ -70,17 +62,6 @@ func buttonFont() Font {
 
 func listFont() Font {
 	return Font{Family: "Consolas", PointSize: 10}
-}
-
-type fileEntry struct {
-	Name    string
-	IsDir   bool
-	Size    int64
-	MTime   int64
-	Mode    string
-	User    string
-	Group   string
-	Display string
 }
 
 type navState struct {
@@ -225,45 +206,49 @@ type app struct {
 	rawArgs []string
 	exe     string
 
-	mw           *walk.MainWindow
-	status       *walk.LineEdit
-	summary      *walk.LineEdit
-	localPath    *walk.LineEdit
-	remotePath   *walk.LineEdit
-	localLB      *walk.ListBox
-	remoteLB     *walk.ListBox
-	localSort    *walk.ComboBox
-	remoteSort   *walk.ComboBox
-	scpButton    *walk.PushButton
-	rsyncButton  *walk.PushButton
-	localNewDir  *walk.PushButton
-	remoteNewDir *walk.PushButton
-	localHash    *walk.PushButton
-	remoteHash   *walk.PushButton
-	localRename  *walk.PushButton
-	remoteRename *walk.PushButton
-	localDelete  *walk.PushButton
-	remoteDelete *walk.PushButton
-	puttyButton  *walk.PushButton
-	xshellButton *walk.PushButton
-	secureButton *walk.PushButton
-	log          *walk.TextEdit
+	mw                  *walk.MainWindow
+	status              *walk.LineEdit
+	summary             *walk.LineEdit
+	localPath           *walk.LineEdit
+	remotePath          *walk.LineEdit
+	localLB             *walk.ListBox
+	remoteLB            *walk.ListBox
+	localSort           *walk.ComboBox
+	remoteSort          *walk.ComboBox
+	localSortDirection  *walk.PushButton
+	remoteSortDirection *walk.PushButton
+	scpButton           *walk.PushButton
+	rsyncButton         *walk.PushButton
+	localNewDir         *walk.PushButton
+	remoteNewDir        *walk.PushButton
+	localHash           *walk.PushButton
+	remoteHash          *walk.PushButton
+	localRename         *walk.PushButton
+	remoteRename        *walk.PushButton
+	localDelete         *walk.PushButton
+	remoteDelete        *walk.PushButton
+	puttyButton         *walk.PushButton
+	xshellButton        *walk.PushButton
+	secureButton        *walk.PushButton
+	log                 *walk.TextEdit
 
-	mu                sync.Mutex
-	localNav          navState
-	remoteNav         navState
-	localItems        []fileEntry
-	remoteItems       []fileEntry
-	localSortMode     sortMode
-	remoteSortMode    sortMode
-	selection         selectionState
-	busy              bool
-	rsyncAvailable    bool
-	current           *childProcess
-	hashCancel        context.CancelFunc
-	shellClients      map[shellClientKind]string
-	shellGateway      *activeShellGateway
-	suppressSelection bool
+	mu                   sync.Mutex
+	localNav             navState
+	remoteNav            navState
+	localItems           []fileEntry
+	remoteItems          []fileEntry
+	localSortMode        sortMode
+	remoteSortMode       sortMode
+	localSortDescending  bool
+	remoteSortDescending bool
+	selection            selectionState
+	busy                 bool
+	rsyncAvailable       bool
+	current              *childProcess
+	hashCancel           context.CancelFunc
+	shellClients         map[shellClientKind]string
+	shellGateway         *activeShellGateway
+	suppressSelection    bool
 }
 
 func Run(opts *cli.Options, rawArgs []string) error {
@@ -314,7 +299,8 @@ func (a *app) run() error {
 						PushButton{Text: "Up", Font: buttonFont(), MinSize: Size{Width: 52, Height: buttonHeight}, MaxSize: Size{Width: 52}, OnClicked: a.localUp},
 						PushButton{Text: "Refresh", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: a.refreshLocal},
 						Label{Text: "Sort"},
-						ComboBox{AssignTo: &a.localSort, Model: sortModeLabels(), CurrentIndex: 0, MaxSize: Size{Width: 92}, OnCurrentIndexChanged: a.localSortChanged},
+						ComboBox{AssignTo: &a.localSort, Model: sortModeLabels(), CurrentIndex: 0, ToolTipText: "Sort by name, file size or modification date", MinSize: Size{Width: 78}, MaxSize: Size{Width: 78}, OnCurrentIndexChanged: a.localSortChanged},
+						PushButton{AssignTo: &a.localSortDirection, Text: "Asc", ToolTipText: sortDirectionToolTip(sortByName, false), MinSize: Size{Width: 52, Height: buttonHeight}, MaxSize: Size{Width: 52}, OnClicked: func() { a.reversePaneSort(sideLocal) }},
 					}},
 					Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
 						LineEdit{AssignTo: &a.localPath, StretchFactor: 1, OnKeyDown: func(key walk.Key) {
@@ -346,7 +332,8 @@ func (a *app) run() error {
 						PushButton{Text: "Up", Font: buttonFont(), MinSize: Size{Width: 52, Height: buttonHeight}, MaxSize: Size{Width: 52}, OnClicked: a.remoteUp},
 						PushButton{Text: "Refresh", Font: buttonFont(), MinSize: Size{Width: 82, Height: buttonHeight}, MaxSize: Size{Width: 82}, OnClicked: a.refreshRemote},
 						Label{Text: "Sort"},
-						ComboBox{AssignTo: &a.remoteSort, Model: sortModeLabels(), CurrentIndex: 0, MaxSize: Size{Width: 92}, OnCurrentIndexChanged: a.remoteSortChanged},
+						ComboBox{AssignTo: &a.remoteSort, Model: sortModeLabels(), CurrentIndex: 0, ToolTipText: "Sort by name, file size or modification date", MinSize: Size{Width: 78}, MaxSize: Size{Width: 78}, OnCurrentIndexChanged: a.remoteSortChanged},
+						PushButton{AssignTo: &a.remoteSortDirection, Text: "Asc", ToolTipText: sortDirectionToolTip(sortByName, false), MinSize: Size{Width: 52, Height: buttonHeight}, MaxSize: Size{Width: 52}, OnClicked: func() { a.reversePaneSort(sideRemote) }},
 					}},
 					Composite{Layout: HBox{MarginsZero: true, Spacing: 4}, Children: []Widget{
 						LineEdit{AssignTo: &a.remotePath, StretchFactor: 1, OnKeyDown: func(key walk.Key) {
@@ -433,18 +420,7 @@ func (a *app) refreshLocal() {
 		a.setStatus("local list failed: " + err.Error())
 		return
 	}
-	a.mu.Lock()
-	sortEntries(items, a.localSortMode)
-	a.localItems = items
-	a.selection = newSelectionState()
-	a.mu.Unlock()
-	a.ui(func() {
-		a.localPath.SetText(dir)
-		a.localLB.SetModel(entryDisplays(items))
-		a.localLB.SetSelectedIndexes(nil)
-		a.remoteLB.SetSelectedIndexes(nil)
-	})
-	a.setButtons()
+	a.replacePaneItems(sideLocal, dir, items)
 }
 
 func (a *app) refreshRemote() {
@@ -483,18 +459,7 @@ func (a *app) loadRemoteUnderOperation(dir string) error {
 			Display: formatEntryDisplay(item.Name, item.IsDir, item.Size, item.MTime, item.Mode, item.User, item.Group),
 		})
 	}
-	a.mu.Lock()
-	sortEntries(entries, a.remoteSortMode)
-	a.remoteItems = entries
-	a.selection = newSelectionState()
-	a.mu.Unlock()
-	a.ui(func() {
-		a.remotePath.SetText(dir)
-		a.remoteLB.SetModel(entryDisplays(entries))
-		a.localLB.SetSelectedIndexes(nil)
-		a.remoteLB.SetSelectedIndexes(nil)
-	})
-	a.setButtons()
+	a.replacePaneItems(sideRemote, dir, entries)
 	return nil
 }
 
@@ -763,54 +728,6 @@ func normalizeNewDirName(input string) (string, error) {
 
 func isASCIIAlpha(b byte) bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
-}
-
-func (a *app) localSortChanged() {
-	if a.localSort == nil {
-		return
-	}
-	mode := sortModeFromIndex(a.localSort.CurrentIndex())
-	a.mu.Lock()
-	a.localSortMode = mode
-	if a.localLB == nil || a.remoteLB == nil {
-		a.mu.Unlock()
-		return
-	}
-	items := append([]fileEntry(nil), a.localItems...)
-	sortEntries(items, mode)
-	a.localItems = items
-	a.selection = newSelectionState()
-	a.mu.Unlock()
-	a.ui(func() {
-		a.localLB.SetModel(entryDisplays(items))
-		a.localLB.SetSelectedIndexes(nil)
-		a.remoteLB.SetSelectedIndexes(nil)
-	})
-	a.setButtons()
-}
-
-func (a *app) remoteSortChanged() {
-	if a.remoteSort == nil {
-		return
-	}
-	mode := sortModeFromIndex(a.remoteSort.CurrentIndex())
-	a.mu.Lock()
-	a.remoteSortMode = mode
-	if a.localLB == nil || a.remoteLB == nil {
-		a.mu.Unlock()
-		return
-	}
-	items := append([]fileEntry(nil), a.remoteItems...)
-	sortEntries(items, mode)
-	a.remoteItems = items
-	a.selection = newSelectionState()
-	a.mu.Unlock()
-	a.ui(func() {
-		a.remoteLB.SetModel(entryDisplays(items))
-		a.localLB.SetSelectedIndexes(nil)
-		a.remoteLB.SetSelectedIndexes(nil)
-	})
-	a.setButtons()
 }
 
 func (a *app) startTransfer(protocol string) {
@@ -1929,55 +1846,6 @@ func listLocal(dir string) ([]fileEntry, error) {
 	}
 	sortEntries(result, sortByName)
 	return result, nil
-}
-
-func sortEntries(entries []fileEntry, mode sortMode) {
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].IsDir != entries[j].IsDir {
-			return entries[i].IsDir
-		}
-		switch mode {
-		case sortByTime:
-			if less, ok := sortValueDescUnknownLast(entries[i].MTime, entries[j].MTime); ok {
-				return less
-			}
-		case sortBySize:
-			if less, ok := sortValueDescUnknownLast(entries[i].Size, entries[j].Size); ok {
-				return less
-			}
-		}
-		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
-	})
-}
-
-func sortValueDescUnknownLast(left, right int64) (bool, bool) {
-	leftUnknown := left < 0
-	rightUnknown := right < 0
-	if leftUnknown || rightUnknown {
-		if leftUnknown != rightUnknown {
-			return !leftUnknown, true
-		}
-		return false, false
-	}
-	if left != right {
-		return left > right, true
-	}
-	return false, false
-}
-
-func sortModeLabels() []string {
-	return []string{"Name", "Time", "Size"}
-}
-
-func sortModeFromIndex(index int) sortMode {
-	switch index {
-	case 1:
-		return sortByTime
-	case 2:
-		return sortBySize
-	default:
-		return sortByName
-	}
 }
 
 func validateLocalDir(dir string) error {

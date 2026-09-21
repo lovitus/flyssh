@@ -98,6 +98,7 @@ func TestWindowsGUISorting(t *testing.T) {
 			// Real selections must follow names, not old numeric indexes.
 			u.selectItems(lists[pane], names[0], names[2])
 			u.wait("hash enabled for selected sort targets", func() bool { return u.enabled(hashes[pane]) })
+			chooseSortKey(u, combos[pane], 1) // Change away from Name before testing its default.
 			otherBefore := sortListNames(u, lists[1-pane])
 			for _, key := range []struct {
 				index            int
@@ -173,7 +174,7 @@ func TestWindowsGUISorting(t *testing.T) {
 			}
 			// Enter an empty child folder then go Up. Sorting survives navigation.
 			u.selectItems(lists[pane], "folder/")
-			u.send(lists[pane], 0x019E, 0, 0) // LB_SETCARETINDEX for MultiSelection ListBox
+			u.send(lists[pane], 0x019E, 0, 0)    // LB_SETCARETINDEX for MultiSelection ListBox
 			notifySortControl(u, lists[pane], 2) // LBN_DBLCLK -> OnItemActivated
 			u.wait("empty child folder", func() bool { return reflect.DeepEqual(sortListNames(u, lists[pane]), []string{"(empty)"}) })
 			u.click(u.controls(main, "Button", "Up")[pane])
