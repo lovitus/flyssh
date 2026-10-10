@@ -29,7 +29,7 @@ func TestBuildShellGatewayArgsPreservesConnectionAndUsesHiddenMode(t *testing.T)
 	}
 	want := []string{
 		"--socks", "127.0.0.1:1080", "user:real-secret@host",
-		"--no-reconnect", "--gui-internal-gateway", "flyssh:local-secret@127.0.0.1:0",
+		"--gui-internal-gateway", "flyssh:local-secret@127.0.0.1:0",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected gateway args:\n got: %#v\nwant: %#v", got, want)
@@ -258,13 +258,13 @@ func TestBuildTransferArgsScenarios(t *testing.T) {
 			name: "rsync upload adds archive", protocol: "rsync", upload: true,
 			sources: []string{`C:\src`}, target: "/tmp/out",
 			wantFlag: "--rsync-upload",
-			wantRaw:  `-avh 'C:\src' '/tmp/out'`,
+			wantRaw:  `-avh --partial-dir=.flyssh-partial --timeout=60 'C:\src' '/tmp/out'`,
 		},
 		{
 			name: "rsync download adds archive", protocol: "rsync", upload: false,
 			sources: []string{"/tmp/src"}, target: `C:\out`,
 			wantFlag: "--rsync-download",
-			wantRaw:  `-avh '/tmp/src' 'C:\out'`,
+			wantRaw:  `-avh --partial-dir=.flyssh-partial --timeout=60 '/tmp/src' 'C:\out'`,
 		},
 	}
 	for _, tt := range tests {

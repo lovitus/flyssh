@@ -1,5 +1,11 @@
 # Changelog / 更新日志
 
+## Unreleased
+
+- Wingui rsync retains partial files, retries network failures with capped backoff, and provides Cancel for active transfers and pending retries.
+- GUI external-shell gateways retain their loopback listener and credentials across upstream failures; reconnects rebuild the existing route and bounded keepalive probes detect silent connections.
+- Added fault-injection regression coverage for real rsync transfers, cancellation, and reconnecting to the original pinned gateway endpoint.
+
 ## v2.0.14 (2026-09-04)
 
 ### Fixes / 修复

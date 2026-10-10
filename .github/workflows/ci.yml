@@ -60,8 +60,40 @@ jobs:
           FLYSSH_E2E: "1"
         run: go test ./e2e -count=1 -v -timeout 9m
 
+      - name: GUI gateway network recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o "${RUNNER_TEMP}/flyssh-recovery" .
+          FLYSSH_RECOVERY_BIN="${RUNNER_TEMP}/flyssh-recovery" go test ./e2e -run '^TestGUIGatewayEndpointSurvivesNetworkFailure$' -count=1 -v -timeout 90s
+
       - name: Race detector
         run: go test -race ./...
 
       - name: Repeat stability check
         run: go test ./... -count=5
+
+  windows-transfers:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          update: false
+          install: rsync
+      - name: Build and exercise Windows GUI transfers
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p pkg/forwarding/relaybin
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/relay" ./cmd/relay
+          gzip -c "$RUNNER_TEMP/relay" > pkg/forwarding/relaybin/relay-linux-amd64.gz
+          go build -o "$RUNNER_TEMP/flyssh-recovery.exe" .
+          FLYSSH_RECOVERY_BIN="$RUNNER_TEMP/flyssh-recovery.exe" go test ./pkg/wingui -count=1 -v -timeout 4m

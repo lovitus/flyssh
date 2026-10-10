@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/flyssh/flyssh/pkg/auth"
 	"github.com/flyssh/flyssh/pkg/cli"
 	"github.com/flyssh/flyssh/pkg/gateway"
 	"golang.org/x/crypto/ssh"
@@ -69,31 +71,85 @@ func runGUIInternalList(opts *cli.Options, dir string) int {
 }
 
 func runGUIInternalGateway(opts *cli.Options, spec string) int {
-	sshConfig, clients, finalClient, err := connectChain(opts)
+	server, err := gateway.Listen(spec, opts.Verbose)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
 		return 255
 	}
-	defer closeClients(clients)
+	defer server.Close()
+	passwordCache := auth.NewPasswordCache()
+	backoff := newReconnectBackoff(time.Duration(opts.ReconnectDelay) * time.Second)
+	reported := false
+	for {
+		sshConfig, clients, finalClient, err := connectChainWithPasswordCache(opts, passwordCache)
+		if err == nil {
+			stop := make(chan struct{})
+			interval, _ := keepAliveInterval(sshConfig)
+			for _, client := range clients {
+				go keepGUIUpstreamAlive(client, interval, stop)
+			}
+			if !reported {
+				if err := json.NewEncoder(os.Stdout).Encode(server.Info()); err != nil {
+					close(stop)
+					closeClients(clients)
+					fmt.Fprintf(os.Stderr, "flyssh: report gateway readiness: %v\n", err)
+					return 255
+				}
+				reported = true
+			}
+			fmt.Fprintf(os.Stderr, "flyssh: shell gateway upstream connected; endpoint %s\n", server.Info().Address)
+			connectedAt := time.Now()
+			err = server.Serve(finalClient)
+			close(stop)
+			closeClients(clients)
+			if time.Since(connectedAt) >= time.Minute {
+				backoff.Reset()
+			}
+		}
+		if opts.NoReconnect {
+			fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
+			return 255
+		}
+		delay := backoff.Next()
+		fmt.Fprintf(os.Stderr, "flyssh: %v; shell gateway keeps %s, reconnecting in %s\n", err, server.Info().Address, delay)
+		time.Sleep(delay)
+	}
+}
 
-	stopKeepalive := make(chan struct{})
-	interval, warnKeepaliveDefault := keepAliveInterval(sshConfig)
-	if warnKeepaliveDefault {
-		fmt.Fprintln(os.Stderr, "flyssh: ServerAliveInterval=0 requested; keepalive remains enabled with default 30s")
+// Only the GUI's persistent gateway uses this bounded liveness probe. A reply
+// (including request failure) proves the peer is alive; a silent connection
+// must be closed so the next upstream generation can take over. At most one
+// request is outstanding, and closing the client unblocks it.
+func keepGUIUpstreamAlive(client *ssh.Client, interval time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			done <- err
+		}()
+		timer := time.NewTimer(3 * interval)
+		select {
+		case <-stop:
+			timer.Stop()
+			return
+		case err := <-done:
+			timer.Stop()
+			if err == nil {
+				continue
+			}
+		case <-timer.C:
+			fmt.Fprintln(os.Stderr, "flyssh: shell gateway upstream keepalive timed out")
+		}
+		_ = client.Close()
+		return
 	}
-	for _, client := range clients {
-		go keepAliveUntil(client, interval, sshConfig.ServerAliveCountMax, stopKeepalive)
-	}
-	defer close(stopKeepalive)
-
-	err = gateway.ServeWithReady(finalClient, spec, opts.Verbose, func(info gateway.ReadyInfo) error {
-		return json.NewEncoder(os.Stdout).Encode(info)
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "flyssh: %v\n", err)
-		return 255
-	}
-	return 0
 }
 
 func runGUIInternalRemoteCommand(client *ssh.Client, cmd string) ([]byte, error) {

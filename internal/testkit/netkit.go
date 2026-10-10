@@ -176,10 +176,23 @@ func runExecCommand(command string, in io.Reader, out, errOut io.Writer) uint32 
 		return 0
 	}
 	cmd := exec.Command("sh", "-lc", command)
-	cmd.Stdin = in
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return 1
+	}
+	defer stdin.Close()
 	cmd.Stdout = out
 	cmd.Stderr = errOut
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return 1
+	}
+	// Report process exit without waiting for the SSH client to send EOF.
+	// Rsync may wait for our exit-status before closing its transport input.
+	go func() {
+		_, _ = io.Copy(stdin, in)
+		_ = stdin.Close()
+	}()
+	if err := cmd.Wait(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return uint32(ee.ExitCode())
 		}

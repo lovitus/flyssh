@@ -5,6 +5,7 @@ package wingui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -235,6 +236,7 @@ type app struct {
 	remoteSort   *walk.ComboBox
 	scpButton    *walk.PushButton
 	rsyncButton  *walk.PushButton
+	cancelButton *walk.PushButton
 	localNewDir  *walk.PushButton
 	remoteNewDir *walk.PushButton
 	localRename  *walk.PushButton
@@ -255,6 +257,10 @@ type app struct {
 	remoteSortMode    sortMode
 	selection         selectionState
 	busy              bool
+	transferActive    bool
+	closed            bool
+	operationCtx      context.Context
+	cancelOperation   context.CancelFunc
 	rsyncAvailable    bool
 	current           *childProcess
 	shellClients      map[shellClientKind]string
@@ -331,6 +337,7 @@ func (a *app) run() error {
 					VSpacer{},
 					PushButton{AssignTo: &a.scpButton, Text: "SCP Transfer", Font: buttonFont(), MinSize: Size{Width: 140, Height: transferButtonHeight}, OnClicked: func() { a.startTransfer("scp") }},
 					PushButton{AssignTo: &a.rsyncButton, Text: "rsync Transfer", Font: buttonFont(), MinSize: Size{Width: 140, Height: transferButtonHeight}, OnClicked: func() { a.startTransfer("rsync") }},
+					PushButton{AssignTo: &a.cancelButton, Text: "Cancel", Font: buttonFont(), MinSize: Size{Width: 140, Height: buttonHeight}, OnClicked: a.killCurrent},
 					VSpacer{},
 				}},
 				Composite{Layout: VBox{MarginsZero: true, Spacing: 4}, StretchFactor: 1, Children: []Widget{
@@ -373,6 +380,9 @@ func (a *app) run() error {
 		return err
 	}
 	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		a.mu.Lock()
+		a.closed = true
+		a.mu.Unlock()
 		a.killCurrent()
 		a.killShellGateway()
 	})
@@ -845,10 +855,41 @@ func (a *app) runTransferArgs(args []string) {
 			return
 		}
 		defer a.endOperation()
-		_, code, err := a.runChild(args, false)
-		if err != nil {
-			a.setStatus(fmt.Sprintf("transfer failed (%d): %v", code, err))
-			return
+		a.mu.Lock()
+		a.transferActive = true
+		ctx := a.operationCtx
+		a.mu.Unlock()
+		a.setButtons()
+		isRsync := len(args) >= 2 && (args[len(args)-2] == "--rsync-upload" || args[len(args)-2] == "--rsync-download")
+		if a.opts != nil && a.opts.NoReconnect {
+			isRsync = false
+		}
+		delay := 3 * time.Second
+		for attempt := 1; ; attempt++ {
+			_, code, stderr, err := a.runChildOutput(args, false)
+			if ctx.Err() != nil {
+				a.setStatus("transfer cancelled")
+				return
+			}
+			if err == nil {
+				break
+			}
+			if !isRsync || !retryableRsyncFailure(code, stderr) {
+				a.setStatus(fmt.Sprintf("transfer failed (%d): %v", code, err))
+				return
+			}
+			a.setStatus(fmt.Sprintf("rsync interrupted (%d); retry #%d in %s; Cancel to stop", code, attempt, delay))
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				a.setStatus("transfer cancelled")
+				return
+			case <-timer.C:
+			}
+			if delay < time.Minute {
+				delay = min(2*delay, time.Minute)
+			}
 		}
 		a.setStatus("transfer complete")
 		a.refreshLocal()
@@ -1411,11 +1452,12 @@ func (a *app) startOperation() bool {
 
 func (a *app) startOperationWithStatus(status string) bool {
 	a.mu.Lock()
-	if a.busy {
+	if a.busy || a.closed {
 		a.mu.Unlock()
 		return false
 	}
 	a.busy = true
+	a.operationCtx, a.cancelOperation = context.WithCancel(context.Background())
 	a.mu.Unlock()
 	a.setStatus(status)
 	a.setButtons()
@@ -1424,7 +1466,13 @@ func (a *app) startOperationWithStatus(status string) bool {
 
 func (a *app) endOperation() {
 	a.mu.Lock()
+	if a.cancelOperation != nil {
+		a.cancelOperation()
+	}
+	a.cancelOperation = nil
+	a.operationCtx = nil
 	a.busy = false
+	a.transferActive = false
 	a.current = nil
 	a.mu.Unlock()
 	a.setButtons()
@@ -1538,6 +1586,9 @@ func (a *app) ensureShellGateway() (*activeShellGateway, error) {
 	}
 	a.mu.Lock()
 	a.current = child
+	if a.closed || (a.operationCtx != nil && a.operationCtx.Err() != nil) {
+		child.kill()
+	}
 	a.mu.Unlock()
 	a.appendMainLogLine("spawn: " + childDescription(args))
 
@@ -1578,6 +1629,13 @@ func (a *app) ensureShellGateway() (*activeShellGateway, error) {
 
 	active := &activeShellGateway{child: child, info: info, user: user, password: password}
 	a.mu.Lock()
+	if a.closed || (a.operationCtx != nil && a.operationCtx.Err() != nil) {
+		a.mu.Unlock()
+		child.kill()
+		_ = child.wait()
+		<-stderrDone
+		return nil, context.Canceled
+	}
 	if a.current == child {
 		a.current = nil
 	}
@@ -1623,17 +1681,34 @@ func (a *app) clearCurrentChild(child *childProcess) {
 }
 
 func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
+	out, code, _, err := a.runChildOutput(args, captureStdout)
+	return out, code, err
+}
+
+func (a *app) runChildOutput(args []string, captureStdout bool) ([]byte, int, string, error) {
+	a.mu.Lock()
+	ctx := a.operationCtx
+	closed := a.closed
+	a.mu.Unlock()
+	if closed || (ctx != nil && ctx.Err() != nil) {
+		return nil, 1, "", context.Canceled
+	}
 	a.appendMainLogLine("command: " + formatChildCommand(a.exe, args))
 	child, stdout, stderr, err := startChild(a.exe, args)
 	if err != nil {
-		return nil, 1, err
+		return nil, 1, "", err
 	}
 	a.mu.Lock()
 	a.current = child
+	if a.closed || (ctx != nil && ctx.Err() != nil) {
+		child.kill()
+	}
 	a.mu.Unlock()
+	defer a.clearCurrentChild(child)
 	a.appendMainLogLine("spawn: " + childDescription(args))
 
 	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -1646,11 +1721,11 @@ func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stderr, "child stderr"), guiLogWriter{a: a}), stderr)
+		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stderr, "child stderr"), guiLogWriter{a: a}, &stderrBuf), stderr)
 	}()
 
-	err = child.wait()
 	wg.Wait()
+	err = child.wait()
 	code := 0
 	if err != nil {
 		code = 1
@@ -1659,7 +1734,7 @@ func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
 		}
 	}
 	a.appendMainLogLine(fmt.Sprintf("exit code: %d", code))
-	return stdoutBuf.Bytes(), code, err
+	return stdoutBuf.Bytes(), code, stderrBuf.String(), err
 }
 
 func startChild(executable string, args []string) (*childProcess, io.ReadCloser, io.ReadCloser, error) {
@@ -1719,11 +1794,19 @@ func createKillOnCloseJob() (windows.Handle, error) {
 
 func (a *app) killCurrent() {
 	a.mu.Lock()
+	if a.cancelOperation != nil {
+		a.cancelOperation()
+	}
+	transfer := a.transferActive
 	child := a.current
 	a.mu.Unlock()
 	if child != nil {
 		child.kill()
 	}
+	if transfer {
+		a.setStatus("cancelling transfer")
+	}
+	a.setButtons()
 }
 
 func (a *app) killShellGateway() {
@@ -1737,6 +1820,7 @@ func (a *app) killShellGateway() {
 
 func (a *app) setButtons() {
 	a.mu.Lock()
+	cancelEnabled := a.transferActive && a.cancelOperation != nil && a.operationCtx.Err() == nil
 	enabled := !a.busy && a.selection.valid() && a.remoteNav.Current != ""
 	localNewDirEnabled := !a.busy && a.localNav.Current != ""
 	remoteNewDirEnabled := !a.busy && a.remoteNav.Current != ""
@@ -1755,6 +1839,7 @@ func (a *app) setButtons() {
 		_ = a.rsyncButton.SetText(transferButtonText("rsync", selection))
 		a.scpButton.SetEnabled(enabled)
 		a.rsyncButton.SetEnabled(enabled && rsyncEnabled)
+		a.cancelButton.SetEnabled(cancelEnabled)
 		a.localNewDir.SetEnabled(localNewDirEnabled)
 		a.remoteNewDir.SetEnabled(remoteNewDirEnabled)
 		a.localRename.SetEnabled(localRenameEnabled)
@@ -1824,8 +1909,18 @@ func (a *app) clearLog() {
 }
 
 func (a *app) ui(fn func()) {
-	if a.mw != nil {
-		a.mw.Synchronize(fn)
+	a.mu.Lock()
+	closed := a.closed
+	a.mu.Unlock()
+	if a.mw != nil && !closed {
+		a.mw.Synchronize(func() {
+			a.mu.Lock()
+			closed := a.closed
+			a.mu.Unlock()
+			if !closed {
+				fn()
+			}
+		})
 	}
 }
 

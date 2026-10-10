@@ -1,0 +1,154 @@
+name: Wingui recovery validation
+
+# Temporary red/green acceptance run for this complete delivery batch.
+on:
+  push:
+    branches: [codex/wingui-network-recovery]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build release relay targets and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pkg/forwarding/relaybin evidence
+          for target in 'linux amd64' 'linux arm64' 'linux 386' 'linux arm' 'darwin amd64' 'darwin arm64' 'freebsd amd64'; do
+            read -r goos goarch <<< "$target"
+            GOOS="$goos" GOARCH="$goarch" GOARM=6 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/relay" ./cmd/relay
+            gzip -c "$RUNNER_TEMP/relay" > "pkg/forwarding/relaybin/relay-$goos-$goarch.gz"
+          done
+          go build -o "$RUNNER_TEMP/flyssh-candidate" .
+      - name: Baseline must reproduce broken gateway recovery
+        # Red evidence retained in run 38038561103.
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/flyssh-baseline" 6520baf
+          cp -r pkg/forwarding/relaybin "$RUNNER_TEMP/flyssh-baseline/pkg/forwarding/"
+          cp internal/testkit/faultproxy.go "$RUNNER_TEMP/flyssh-baseline/internal/testkit/"
+          cp internal/testkit/netkit.go "$RUNNER_TEMP/flyssh-baseline/internal/testkit/"
+          cp e2e/gui_gateway_recovery_test.go "$RUNNER_TEMP/flyssh-baseline/e2e/"
+          cd "$RUNNER_TEMP/flyssh-baseline"
+          go build -o "$RUNNER_TEMP/flyssh-old" .
+          go test -c ./e2e -o "$RUNNER_TEMP/gateway-old.test"
+          set +e
+          FLYSSH_RECOVERY_BIN="$RUNNER_TEMP/flyssh-old" "$RUNNER_TEMP/gateway-old.test" -test.run '^TestGUIGatewayEndpointSurvivesNetworkFailure$' -test.v -test.timeout 90s > "$GITHUB_WORKSPACE/evidence/gateway-old.log" 2>&1
+          code=$?
+          set -e
+          cat "$GITHUB_WORKSPACE/evidence/gateway-old.log"
+          test "$code" -ne 0
+          grep -q -- '--- FAIL: TestGUIGatewayEndpointSurvivesNetworkFailure' "$GITHUB_WORKSPACE/evidence/gateway-old.log"
+      - name: Candidate fault injection and regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLYSSH_RECOVERY_BIN="$RUNNER_TEMP/flyssh-candidate" go test ./e2e -run '^TestGUIGatewayEndpointSurvivesNetworkFailure$' -v -count=1 -timeout 90s | tee evidence/gateway-new.log
+          go test . ./internal/testkit ./pkg/auth ./pkg/connector ./pkg/forwarding ./pkg/gateway ./pkg/transfer | tee evidence/fixture-regression.log
+          go test -race ./pkg/gateway | tee evidence/gateway-race.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gateway-recovery-evidence
+          path: evidence/
+
+  windows-rsync:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          update: false
+          install: rsync
+      - name: Build Windows candidate
+        run: |
+          set -euo pipefail
+          mkdir -p pkg/forwarding/relaybin evidence
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/relay" ./cmd/relay
+          gzip -c "$RUNNER_TEMP/relay" > pkg/forwarding/relaybin/relay-linux-amd64.gz
+          go install github.com/akavel/rsrc@latest
+          rsrc -manifest flyssh.manifest -arch amd64 -o rsrc_windows_amd64.syso
+          go build -o "$RUNNER_TEMP/flyssh-candidate.exe" .
+          rsync --version
+      - name: Baseline must reproduce lost transfer
+        # Red evidence retained in run 38039651179.
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/flyssh-baseline" 6520baf
+          cp -r pkg/forwarding/relaybin "$RUNNER_TEMP/flyssh-baseline/pkg/forwarding/"
+          cp internal/testkit/faultproxy.go "$RUNNER_TEMP/flyssh-baseline/internal/testkit/"
+          cp internal/testkit/netkit.go "$RUNNER_TEMP/flyssh-baseline/internal/testkit/"
+          cp pkg/wingui/recovery_windows_test.go "$RUNNER_TEMP/flyssh-baseline/pkg/wingui/"
+          cd "$RUNNER_TEMP/flyssh-baseline"
+          go build -o "$RUNNER_TEMP/flyssh-old.exe" .
+          go test -c ./pkg/wingui -o "$RUNNER_TEMP/wingui-old.test.exe"
+          set +e
+          FLYSSH_RECOVERY_BIN="$RUNNER_TEMP/flyssh-old.exe" "$RUNNER_TEMP/wingui-old.test.exe" -test.run '^TestGUIRsyncRecovery$' -test.v -test.timeout 2m > "$GITHUB_WORKSPACE/evidence/rsync-old.log" 2>&1
+          code=$?
+          set -e
+          cat "$GITHUB_WORKSPACE/evidence/rsync-old.log"
+          test "$code" -ne 0
+          grep -q 'real rsync did not reach' "$GITHUB_WORKSPACE/evidence/rsync-old.log" && exit 1
+          grep -q -- '--- FAIL: TestGUIRsyncRecovery' "$GITHUB_WORKSPACE/evidence/rsync-old.log"
+      - name: Cancellation negative control must fail
+        # Disabled-cancel red and enabled-cancel green in run 38039651179.
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          cp pkg/wingui/wingui_windows.go "$RUNNER_TEMP/wingui-original.go"
+          trap 'cp "$RUNNER_TEMP/wingui-original.go" pkg/wingui/wingui_windows.go' EXIT
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('pkg/wingui/wingui_windows.go')
+          s = p.read_text()
+          s = s.replace('func (a *app) killCurrent() {', 'func (a *app) killCurrent() {\n return // acceptance mutation: disable cancellation')
+          p.write_text(s)
+          PY
+          go test -c ./pkg/wingui -o "$RUNNER_TEMP/wingui-no-cancel.test.exe"
+          set +e
+          FLYSSH_RECOVERY_BIN="$RUNNER_TEMP/flyssh-candidate.exe" "$RUNNER_TEMP/wingui-no-cancel.test.exe" -test.run '^TestGUIRsyncCancel$' -test.v -test.timeout 2m > evidence/cancel-disabled.log 2>&1
+          code=$?
+          set -e
+          cat evidence/cancel-disabled.log
+          test "$code" -ne 0
+          grep -q 'cancelled operation released GUI' evidence/cancel-disabled.log
+      - name: Candidate real transfers and cancellation
+        run: |
+          set -euo pipefail
+          FLYSSH_RECOVERY_BIN="$RUNNER_TEMP/flyssh-candidate.exe" go test ./pkg/wingui -run '^TestGUIRsync(Recovery|Cancel)$' -v -count=1 -timeout 4m | tee evidence/rsync-new.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-rsync-recovery-evidence
+          path: evidence/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flyssh-windows-candidate
+          path: ${{ runner.temp }}/flyssh-candidate.exe

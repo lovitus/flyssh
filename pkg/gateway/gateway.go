@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -30,37 +31,48 @@ func Serve(finalClient *ssh.Client, spec string, verbose bool) error {
 // ServeWithReady is Serve with an optional callback invoked after the local
 // listener is ready and before the accept loop starts.
 func ServeWithReady(finalClient *ssh.Client, spec string, verbose bool, ready func(ReadyInfo) error) error {
+	server, err := Listen(spec, verbose)
+	if err != nil {
+		return err
+	}
+	defer server.Close()
+	if ready != nil {
+		if err := ready(server.Info()); err != nil {
+			return fmt.Errorf("gateway: report ready: %w", err)
+		}
+	}
+	return server.Serve(finalClient)
+}
+
+// Listen reserves the gateway endpoint until Close, independently of upstream
+// connections. Serve can be called sequentially with replacement SSH clients.
+func Listen(spec string, verbose bool) (*Server, error) {
 	user, password, bindAddr, err := parseGatewaySpec(spec)
 	if err != nil {
-		return fmt.Errorf("gateway: %w", err)
+		return nil, fmt.Errorf("gateway: %w", err)
 	}
 
 	hostKeys, err := loadOrGenerateHostKeys()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		return fmt.Errorf("gateway: listen %s: %w", bindAddr, err)
+		return nil, fmt.Errorf("gateway: listen %s: %w", bindAddr, err)
 	}
 
 	if verbose {
 		log.Printf("[gateway] Listening on %s (user=%s)", ln.Addr(), user)
 	}
-	if ready != nil {
-		info, err := gatewayReadyInfo(ln, hostKeys)
-		if err != nil {
-			_ = ln.Close()
-			return err
-		}
-		if err := ready(info); err != nil {
-			_ = ln.Close()
-			return fmt.Errorf("gateway: report ready: %w", err)
-		}
+	info, err := gatewayReadyInfo(ln, hostKeys)
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
 	}
-
-	return serveListener(ln, finalClient, user, password, hostKeys, verbose)
+	server := newServer(ln, user, password, hostKeys, verbose)
+	server.info = info
+	return server, nil
 }
 
 func gatewayReadyInfo(ln net.Listener, hostKeys []ssh.Signer) (ReadyInfo, error) {
@@ -82,6 +94,22 @@ func gatewayReadyInfo(ln net.Listener, hostKeys []ssh.Signer) (ReadyInfo, error)
 
 // serveListener is the internal serve loop, separated for testability.
 func serveListener(ln net.Listener, finalClient *ssh.Client, user, password string, hostKeys []ssh.Signer, verbose bool) error {
+	server := newServer(ln, user, password, hostKeys, verbose)
+	defer server.Close()
+	return server.Serve(finalClient)
+}
+
+type Server struct {
+	listener net.Listener
+	config   *ssh.ServerConfig
+	info     ReadyInfo
+	verbose  bool
+	accepted chan net.Conn
+	closed   chan struct{}
+	once     sync.Once
+}
+
+func newServer(ln net.Listener, user, password string, hostKeys []ssh.Signer, verbose bool) *Server {
 	expectedUser := []byte(user)
 	expectedPassword := []byte(password)
 	serverConfig := &ssh.ServerConfig{
@@ -98,73 +126,84 @@ func serveListener(ln net.Listener, finalClient *ssh.Client, user, password stri
 		serverConfig.AddHostKey(hk)
 	}
 
-	// Track active downstream connections for cleanup.
-	var mu sync.Mutex
-	var activeConns []*ssh.ServerConn
-
-	// Monitor upstream death.
-	done := make(chan error, 1)
+	s := &Server{listener: ln, config: serverConfig, verbose: verbose,
+		accepted: make(chan net.Conn), closed: make(chan struct{})}
 	go func() {
-		done <- finalClient.Wait()
-	}()
-
-	// Close listener and all downstream when upstream dies.
-	go func() {
-		<-done
-		ln.Close()
-		mu.Lock()
-		for _, sc := range activeConns {
-			sc.Close()
-		}
-		mu.Unlock()
-	}()
-
-	for {
-		tcpConn, err := ln.Accept()
-		if err != nil {
-			// Check if upstream died.
-			select {
-			case upErr := <-done:
-				if upErr != nil {
-					return fmt.Errorf("gateway: upstream died: %w", upErr)
-				}
-				return fmt.Errorf("gateway: upstream connection closed")
-			default:
-			}
-			return fmt.Errorf("gateway: accept: %w", err)
-		}
-
-		go func(conn net.Conn) {
-			sshConn, chans, reqs, err := ssh.NewServerConn(conn, serverConfig)
+		for {
+			conn, err := ln.Accept()
 			if err != nil {
-				if verbose {
-					log.Printf("[gateway] handshake failed: %v", err)
-				}
-				conn.Close()
+				s.Close()
 				return
 			}
-
-			mu.Lock()
-			activeConns = append(activeConns, sshConn)
-			mu.Unlock()
-
-			// Handle global requests.
-			go handleGlobalRequests(reqs, verbose)
-
-			// Handle channels.
-			handleChannels(chans, finalClient, verbose)
-
-			// Cleanup on disconnect.
-			sshConn.Close()
-			mu.Lock()
-			for i, sc := range activeConns {
-				if sc == sshConn {
-					activeConns = append(activeConns[:i], activeConns[i+1:]...)
-					break
-				}
+			select {
+			case s.accepted <- conn:
+			case <-s.closed:
+				_ = conn.Close()
+				return
 			}
+		}
+	}()
+	return s
+}
+
+func (s *Server) Info() ReadyInfo { return s.info }
+
+func (s *Server) Close() error {
+	s.once.Do(func() {
+		close(s.closed)
+		_ = s.listener.Close()
+	})
+	return nil
+}
+
+// Serve ends all downstream connections belonging to this upstream generation,
+// including connections still authenticating. It never releases the listener.
+func (s *Server) Serve(upstream *ssh.Client) error {
+	var mu sync.Mutex
+	active := make(map[net.Conn]struct{})
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for conn := range active {
+			_ = conn.Close()
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- upstream.Wait() }()
+	for {
+		select {
+		case <-s.closed:
+			return fmt.Errorf("gateway: listener closed: %w", net.ErrClosed)
+		case err := <-done:
+			if err != nil {
+				return fmt.Errorf("gateway: upstream connection lost: %w", err)
+			}
+			return fmt.Errorf("gateway: upstream connection closed")
+		case conn := <-s.accepted:
+			mu.Lock()
+			active[conn] = struct{}{}
 			mu.Unlock()
-		}(tcpConn)
+			go func() {
+				defer func() {
+					_ = conn.Close()
+					mu.Lock()
+					delete(active, conn)
+					mu.Unlock()
+				}()
+				_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+				sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.config)
+				if err != nil {
+					if s.verbose {
+						log.Printf("[gateway] handshake failed: %v", err)
+					}
+					return
+				}
+				defer sshConn.Close()
+				_ = conn.SetDeadline(time.Time{})
+				go handleGlobalRequests(reqs, s.verbose)
+				handleChannels(chans, upstream, s.verbose)
+			}()
+		}
 	}
 }
 

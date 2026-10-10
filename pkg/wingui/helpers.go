@@ -57,9 +57,6 @@ func buildShellGatewayArgs(rawArgs []string, user, password string) ([]string, e
 		return nil, fmt.Errorf("empty shell gateway credential")
 	}
 	args := buildChildArgs(rawArgs)
-	if !containsArg(args, "--no-reconnect") {
-		args = append(args, "--no-reconnect")
-	}
 	spec := user + ":" + password + "@127.0.0.1:0"
 	return append(args, "--gui-internal-gateway", spec), nil
 }
@@ -304,7 +301,7 @@ func buildTransferArgs(protocol string, upload bool, directory bool, sources []s
 		} else {
 			flag = "--rsync-download"
 		}
-		parts = append(parts, "-avh")
+		parts = append(parts, "-avh", "--partial-dir=.flyssh-partial", "--timeout=60")
 	default:
 		return "", "", fmt.Errorf("unsupported transfer protocol: %s", protocol)
 	}

@@ -436,6 +436,7 @@ GUI 支持：
 
 - local and remote directory browsing with back/forward/up/refresh / 本地与远端目录浏览，支持后退、前进、上级、刷新
 - SCP and rsync upload/download buttons for the current selection / 对当前选择执行 SCP 或 rsync 上传/下载
+- rsync retries interrupted network transfers with 3/6/12/24/48/60-second backoff; Cancel stops the current process tree and pending retries / rsync 网络中断后按 3/6/12/24/48/60 秒退避重试；Cancel 停止当前进程树及后续重试
 - drag local files or folders onto the remote list to upload after choosing `rsync`, `SCP`, or `Cancel` / 将本地文件或文件夹拖到远端列表后，可选择 `rsync`、`SCP` 或取消
 - delete selected local or remote items after confirmation / 确认后删除选中的本地或远端项目
 - rename or move one selected local or remote item by editing its full path / 通过编辑完整路径重命名或移动单个选中的本地或远端项目
@@ -444,6 +445,14 @@ GUI 支持：
 Authentication, host-key, passphrase, and MFA prompts still happen in the terminal. Keep the launching console visible while the GUI is running.
 
 认证、主机密钥、密钥口令和 MFA 提示仍在终端完成。GUI 运行期间请保留启动它的控制台窗口。
+
+GUI rsync uses `--partial-dir=.flyssh-partial --timeout=60`. Interrupted data stays in a relative partial directory for rsync to reuse; the complete destination is replaced only after the file finishes. A 60-second rsync I/O timeout ends a stalled attempt. Permission, authentication, host-key, disk-space and ordinary partial-transfer errors are reported instead of retried. `--no-reconnect` explicitly disables automatic retries.
+
+GUI 的 rsync 将未完成数据保存在目标目录下的 `.flyssh-partial` 中，重试时由 rsync 复用，文件完整后才替换正式目标。连续 60 秒没有 rsync 数据收发会结束本轮并重试。权限、认证、主机密钥、磁盘空间及普通部分传输错误直接报错；显式指定 `--no-reconnect` 可禁用自动重试。取消可能留下续传临时数据，重新传输同一目标时可复用。
+
+Open Shell keeps one loopback gateway port, password and host key for the GUI lifetime. An upstream failure closes affected SSH connections but retains the listener and reconnects the route with backoff. Xshell/Xftp/PuTTY/SecureCRT can reconnect to their original endpoint. A bounded SSH keepalive probe detects a silent upstream; a rejected keepalive request still counts as a response. Close the GUI to release the gateway. This does not restore a terminated remote shell or automatically resume an external client's rz/sz transfer; those operations belong to that client.
+
+Open Shell 在 GUI 存活期间固定本地 gateway 端口、密码和主机密钥。上游断线时，受影响的 SSH 连接会关闭，但监听端口继续保留，并自动退避重建链路；Xshell/Xftp/PuTTY/SecureCRT 可以按原地址重连。限时 SSH 心跳用于发现无响应链路，服务端拒绝该请求也算有效响应。关闭 GUI 才释放 gateway。这不等于恢复已退出的远端 shell，也不自动续传外部客户端的 rz/sz；后者仍取决于客户端自身。
 
 Transfer caveat:
 
