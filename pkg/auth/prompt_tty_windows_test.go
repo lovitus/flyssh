@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -56,8 +57,10 @@ func TestPromptConsoleHelperProcess(t *testing.T) {
 				}
 			}
 			close(cancel)
+			var cancelErr error
 			select {
 			case err := <-done:
+				cancelErr = err
 				if err == nil {
 					t.Fatal("cancelled console read succeeded")
 				}
@@ -69,7 +72,7 @@ func TestPromptConsoleHelperProcess(t *testing.T) {
 				t.Fatal(err)
 			}
 			if after != original {
-				t.Fatalf("console mode not restored: before=%x after=%x", original, after)
+				t.Fatalf("console mode not restored: before=%x after=%x password=%v pending=%v cancellation=%v", original, after, password, pending, cancelErr)
 			}
 		}
 	}
@@ -81,10 +84,13 @@ func TestPromptCancellationFailureRetainsOnlyOneNativeReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	entered, release := make(chan struct{}), make(chan struct{})
+	restored := make(chan struct{})
 	cancel := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		_, err := readPromptTTYWithCancel(file, cancel, func() (string, error) { close(entered); <-release; return "", nil }, func(windows.Handle) error { return windows.ERROR_ACCESS_DENIED })
+		_, err := readPromptTTYWithCancel(file, cancel, func() (string, error) { close(entered); <-release; return "", nil }, func(windows.Handle) error { return windows.ERROR_ACCESS_DENIED }, func() (func() error, error) {
+			return func() error { close(restored); return nil }, nil
+		})
 		done <- err
 	}()
 	defer func() {
@@ -92,6 +98,11 @@ func TestPromptCancellationFailureRetainsOnlyOneNativeReader(t *testing.T) {
 		select {
 		case promptTTYSlot <- struct{}{}:
 			<-promptTTYSlot
+			select {
+			case <-restored:
+			default:
+				t.Error("retained reader released its slot before restoring state")
+			}
 		case <-time.After(2 * time.Second):
 			t.Error("native worker did not release its slot")
 		}
@@ -106,6 +117,11 @@ func TestPromptCancellationFailureRetainsOnlyOneNativeReader(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("unrecoverable cancellation error spun indefinitely")
 	}
+	select {
+	case <-restored:
+		t.Fatal("restored state while failed cancellation left native read active")
+	default:
+	}
 	other, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatal(err)
@@ -113,10 +129,83 @@ func TestPromptCancellationFailureRetainsOnlyOneNativeReader(t *testing.T) {
 	_, err = readPromptTTYWithCancel(other, cancel, func() (string, error) {
 		t.Error("started another native reader after cancellation failure")
 		return "", nil
-	}, func(windows.Handle) error { return nil })
+	}, func(windows.Handle) error { return nil }, nil)
 	if err == nil {
 		t.Fatal("cancelled queued native reader succeeded")
 	}
+}
+
+func TestPromptRestorationFailureAfterNormalRead(t *testing.T) {
+	file, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreErr := errors.New("injected restoration failure")
+	value, err := readPromptTTYWithCancel(file, make(chan struct{}), func() (string, error) {
+		return "answer", nil
+	}, func(windows.Handle) error { t.Error("unexpected cancellation"); return nil }, func() (func() error, error) {
+		return func() error { return restoreErr }, nil
+	})
+	if value != "answer" || !errors.Is(err, restoreErr) {
+		t.Fatalf("value=%q restoration error=%v", value, err)
+	}
+}
+
+// Hold an in-flight cancellation past the end of read. Restoration must wait
+// for that call to return, and the caller must then wait for restoration.
+func TestPromptRestorationWaitsForCancellationToStop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		file, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancel := make(chan struct{})
+		readEntered, readRelease := make(chan struct{}), make(chan struct{})
+		cancelEntered, cancelRelease := make(chan struct{}), make(chan struct{})
+		restoreEntered, restoreRelease := make(chan struct{}), make(chan struct{})
+		done := make(chan error, 1)
+		restoreErr := errors.New("injected restoration failure")
+		go func() {
+			_, err := readPromptTTYWithCancel(file, cancel, func() (string, error) {
+				close(readEntered)
+				<-readRelease
+				return "", windows.ERROR_OPERATION_ABORTED
+			}, func(windows.Handle) error {
+				close(cancelEntered)
+				<-cancelRelease
+				return nil
+			}, func() (func() error, error) {
+				return func() error {
+					close(restoreEntered)
+					<-restoreRelease
+					return restoreErr
+				}, nil
+			})
+			done <- err
+		}()
+		<-readEntered
+		close(cancel)
+		<-cancelEntered
+		close(readRelease)
+		synctest.Wait()
+		select {
+		case <-restoreEntered:
+			t.Fatal("restoration overlapped in-flight native cancellation")
+		default:
+		}
+		close(cancelRelease)
+		<-restoreEntered
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("caller returned before restoration completed")
+		default:
+		}
+		close(restoreRelease)
+		if err := <-done; !errors.Is(err, restoreErr) {
+			t.Fatalf("restoration error lost: %v", err)
+		}
+	})
 }
 
 func TestPromptConsoleCancellationAndPasswordModeRestoration(t *testing.T) {

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -17,8 +18,8 @@ var cancelPromptSynchronousIO = windows.NewLazySystemDLL("kernel32.dll").NewProc
 var promptTTYSlot = make(chan struct{}, 1)
 
 // Console reads are synchronous. os.File.Close waits for the read's reference
-// and cannot cancel it. CancelSynchronousIo must target the exact native thread
-// issuing ReadConsole/ReadFile, including ReadPassword's mode restoration.
+// and cannot cancel it. Cancellation must stop before restoring the console:
+// CancelSynchronousIo can also interrupt ReadPassword's deferred SetConsoleMode.
 func readCancelablePromptTTY(file *os.File, cancel <-chan struct{}, read func() (string, error)) (string, error) {
 	return readPromptTTYWithCancel(file, cancel, read, func(thread windows.Handle) error {
 		ret, _, err := cancelPromptSynchronousIO.Call(uintptr(thread))
@@ -26,10 +27,24 @@ func readCancelablePromptTTY(file *os.File, cancel <-chan struct{}, read func() 
 			return err
 		}
 		return nil
+	}, func() (func() error, error) {
+		var original uint32
+		if err := windows.GetConsoleMode(windows.Handle(file.Fd()), &original); err != nil {
+			return nil, fmt.Errorf("get prompt console mode: %w", err)
+		}
+		return func() error {
+			if err := windows.SetConsoleMode(windows.Handle(file.Fd()), original); err != nil {
+				return fmt.Errorf("restore prompt console mode: %w", err)
+			}
+			return nil
+		}, nil
 	})
 }
 
-func readPromptTTYWithCancel(file *os.File, cancel <-chan struct{}, read func() (string, error), cancelThread func(windows.Handle) error) (string, error) {
+// prepare runs under the global slot, before the native thread is published to
+// the canceller. Its cleanup runs after read returns AND cancellation stops.
+// Nil prepare supports readers with no console state (including test stand-ins).
+func readPromptTTYWithCancel(file *os.File, cancel <-chan struct{}, read func() (string, error), cancelThread func(windows.Handle) error, prepare func() (func() error, error)) (string, error) {
 	if err := cancelPromptSynchronousIO.Find(); err != nil {
 		_ = file.Close()
 		return "", fmt.Errorf("find console cancellation API: %w", err)
@@ -40,6 +55,16 @@ func readPromptTTYWithCancel(file *os.File, cancel <-chan struct{}, read func() 
 		_ = file.Close()
 		return "", fmt.Errorf("prompt cancelled")
 	}
+	var restore func() error
+	if prepare != nil {
+		var err error
+		restore, err = prepare()
+		if err != nil {
+			_ = file.Close()
+			<-promptTTYSlot
+			return "", err
+		}
+	}
 	type setupResult struct {
 		thread windows.Handle
 		err    error
@@ -49,6 +74,7 @@ func readPromptTTYWithCancel(file *os.File, cancel <-chan struct{}, read func() 
 		err   error
 	}
 	setup := make(chan setupResult, 1)
+	readDone := make(chan struct{})
 	done := make(chan readResult, 1)
 	release := make(chan struct{})
 	go func() {
@@ -62,20 +88,40 @@ func readPromptTTYWithCancel(file *os.File, cancel <-chan struct{}, read func() 
 			return
 		}
 		value, err := read()
-		_ = file.Close() // The actual native read and mode restoration have finished.
-		done <- readResult{value, err}
-		// Do not let the runtime reuse this thread until the canceller has stopped.
+		close(readDone)
+		// The canceller may still be in CancelSynchronousIo. Keep this thread
+		// pinned and do not issue restoration I/O until it acknowledges stop.
 		<-release
+		if restore != nil {
+			err = errors.Join(err, restore())
+		}
+		_ = file.Close()
+		done <- readResult{value, err}
 	}()
 	ready := <-setup
 	if ready.err != nil {
 		return "", fmt.Errorf("open prompt reader thread: %w", ready.err)
 	}
 	defer windows.CloseHandle(ready.thread)
-	defer close(release)
-	select {
-	case result := <-done:
+	released := false
+	stopCancellation := func() {
+		if !released {
+			close(release)
+			released = true
+		}
+	}
+	defer stopCancellation()
+	finish := func(cancelled bool) (string, error) {
+		stopCancellation()
+		result := <-done // Includes the explicit, checked mode restoration.
+		if cancelled {
+			return "", errors.Join(fmt.Errorf("prompt cancelled"), result.err)
+		}
 		return result.value, result.err
+	}
+	select {
+	case <-readDone:
+		return finish(false)
 	case <-cancel:
 	}
 	// Cancellation may arrive just before the native read is submitted. Retry
@@ -84,8 +130,8 @@ func readPromptTTYWithCancel(file *os.File, cancel <-chan struct{}, read func() 
 	defer ticker.Stop()
 	for {
 		select {
-		case <-done:
-			return "", fmt.Errorf("prompt cancelled")
+		case <-readDone:
+			return finish(true)
 		default:
 		}
 		if err := cancelThread(ready.thread); err != nil && err != windows.ERROR_NOT_FOUND {
@@ -95,8 +141,8 @@ func readPromptTTYWithCancel(file *os.File, cancel <-chan struct{}, read func() 
 			return "", fmt.Errorf("cancel console input (native reader retained until completion): %w", err)
 		}
 		select {
-		case <-done:
-			return "", fmt.Errorf("prompt cancelled")
+		case <-readDone:
+			return finish(true)
 		case <-ticker.C:
 		}
 	}
