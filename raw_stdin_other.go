@@ -7,6 +7,7 @@ import (
 	"os"
 )
 
-func rawStdinReader() io.Reader {
-	return os.Stdin
+func rawStdinReader() (io.ReadCloser, error) {
+	// The inherited process handle belongs to os.Stdin.
+	return io.NopCloser(os.Stdin), nil
 }

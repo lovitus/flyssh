@@ -2,14 +2,15 @@ package main
 
 import (
 	"io"
+	"runtime"
 	"sync"
 	"syscall"
 	"unsafe"
 )
 
 var (
-	modkernel32         = syscall.NewLazyDLL("kernel32.dll")
-	procCreateEventW    = modkernel32.NewProc("CreateEventW")
+	modkernel32             = syscall.NewLazyDLL("kernel32.dll")
+	procCreateEventW        = modkernel32.NewProc("CreateEventW")
 	procGetOverlappedResult = modkernel32.NewProc("GetOverlappedResult")
 )
 
@@ -22,27 +23,36 @@ var (
 // pointer, which is invalid for async handles (Windows error 87).
 //
 // This reader uses a proper OVERLAPPED struct so ReadFile succeeds.
-func rawStdinReader() io.Reader {
-	h := syscall.Stdin
-	event, _, _ := procCreateEventW.Call(0, 1, 0, 0) // manual-reset, non-signaled
-	return &overlappedReader{
-		handle: h,
-		event:  syscall.Handle(event),
+func rawStdinReader() (io.ReadCloser, error) {
+	return newOverlappedReader(syscall.Stdin)
+}
+
+func newOverlappedReader(handle syscall.Handle) (*overlappedReader, error) {
+	event, _, err := procCreateEventW.Call(0, 1, 0, 0) // manual-reset, non-signaled
+	if event == 0 {
+		return nil, err
 	}
+	return &overlappedReader{handle: handle, event: syscall.Handle(event)}, nil
+}
+
+// Close releases only our event, after the copying goroutine has finished Read.
+// It is not a cancellation API: a pending inherited stdin read lives until the
+// one-shot transport process exits if the remote command finishes first.
+func (r *overlappedReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.event == 0 {
+		return nil
+	}
+	err := syscall.CloseHandle(r.event)
+	r.event = 0
+	return err
 }
 
 type overlappedReader struct {
 	handle syscall.Handle
 	event  syscall.Handle
 	mu     sync.Mutex
-}
-
-type overlapped struct {
-	Internal     uintptr
-	InternalHigh uintptr
-	Offset       uint32
-	OffsetHigh   uint32
-	HEvent       syscall.Handle
 }
 
 func (r *overlappedReader) Read(buf []byte) (int, error) {
@@ -52,34 +62,33 @@ func (r *overlappedReader) Read(buf []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	ol := &overlapped{HEvent: r.event}
+	ol := &syscall.Overlapped{HEvent: r.event}
 	var n uint32
 
-	err := syscall.ReadFile(r.handle, buf, &n, (*syscall.Overlapped)(unsafe.Pointer(ol)))
-	if err != nil {
-		if err == syscall.ERROR_IO_PENDING {
-			// Wait for the async read to complete
-			ret, _, err2 := procGetOverlappedResult.Call(
-				uintptr(r.handle),
-				uintptr(unsafe.Pointer(ol)),
-				uintptr(unsafe.Pointer(&n)),
-				1, // bWait = TRUE
-			)
-			if ret == 0 {
-				if n > 0 {
-					return int(n), nil
-				}
-				return 0, err2
-			}
-		} else {
-			if n > 0 {
-				return int(n), nil
-			}
-			return 0, io.EOF
-		}
+	err := syscall.ReadFile(r.handle, buf, &n, ol)
+	if err == syscall.ERROR_IO_PENDING {
+		err = waitPendingStdinRead(r.handle, ol, &n)
 	}
-	if n == 0 {
-		return 0, io.EOF
+	runtime.KeepAlive(buf)
+	runtime.KeepAlive(ol)
+	return overlappedReadResult(n, err)
+}
+
+// The caller retains the read buffer and OVERLAPPED until this returns.
+func waitPendingStdinRead(handle syscall.Handle, ol *syscall.Overlapped, n *uint32) error {
+	ret, _, err := procGetOverlappedResult.Call(
+		uintptr(handle), uintptr(unsafe.Pointer(ol)), uintptr(unsafe.Pointer(n)), 1,
+	)
+	if ret == 0 {
+		return err
 	}
-	return int(n), nil
+	return nil
+}
+
+func overlappedReadResult(n uint32, err error) (int, error) {
+	if err == syscall.ERROR_BROKEN_PIPE || err == syscall.ERROR_HANDLE_EOF || (err == nil && n == 0) {
+		err = io.EOF
+	}
+	// io.Copy consumes n bytes before reporting err; do not discard either.
+	return int(n), err
 }

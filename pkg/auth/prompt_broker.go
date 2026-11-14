@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -51,10 +52,16 @@ func StartPromptBroker() (env []string, cleanup func(), err error) {
 	}
 
 	var wg sync.WaitGroup
-	var promptMu sync.Mutex
+	var mu sync.Mutex
+	var once sync.Once
+	connections := make(map[net.Conn]struct{})
+	closing := false
+	promptSlot := make(chan struct{}, 1)
 	stopped := make(chan struct{})
+	acceptDone := make(chan struct{})
 
 	go func() {
+		defer close(acceptDone)
 		for {
 			conn, acceptErr := listener.Accept()
 			if acceptErr != nil {
@@ -65,21 +72,47 @@ func StartPromptBroker() (env []string, cleanup func(), err error) {
 					continue
 				}
 			}
-
+			mu.Lock()
+			if closing {
+				mu.Unlock()
+				_ = conn.Close()
+				return
+			}
+			connections[conn] = struct{}{}
 			wg.Add(1)
+			mu.Unlock()
 			go func(c net.Conn) {
 				defer wg.Done()
-				defer c.Close()
-				handlePromptBrokerConn(c, token, &promptMu, stopped)
+				defer func() {
+					_ = c.Close()
+					mu.Lock()
+					delete(connections, c)
+					mu.Unlock()
+				}()
+				handlePromptBrokerConn(c, token, promptSlot, stopped)
 			}(conn)
 		}
 	}()
 
 	cleanup = func() {
-		close(stopped)
-		_ = listener.Close()
-		wg.Wait()
-		cleanupListener()
+		once.Do(func() {
+			mu.Lock()
+			closing = true
+			close(stopped)
+			active := make([]net.Conn, 0, len(connections))
+			for conn := range connections {
+				active = append(active, conn)
+			}
+			mu.Unlock()
+			_ = listener.Close()
+			for _, conn := range active {
+				_ = conn.Close()
+			}
+			// No Add can race Wait after the accept loop has exited.
+			<-acceptDone
+			wg.Wait()
+			cleanupListener()
+		})
 	}
 
 	env = []string{
@@ -111,22 +144,47 @@ func startPromptBrokerListener() (string, net.Listener, func(), error) {
 	return "tcp", listener, func() {}, nil
 }
 
-func handlePromptBrokerConn(conn net.Conn, token string, promptMu *sync.Mutex, stopped <-chan struct{}) {
+const promptBrokerIOTimeout = 10 * time.Second
+
+func writePromptBrokerResponse(conn net.Conn, resp promptBrokerResponse) {
+	_ = conn.SetWriteDeadline(time.Now().Add(promptBrokerIOTimeout))
+	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+func handlePromptBrokerConn(conn net.Conn, token string, promptSlot chan struct{}, stopped <-chan struct{}) {
 	var req promptBrokerRequest
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
-		_ = json.NewEncoder(conn).Encode(promptBrokerResponse{Error: err.Error()})
+	_ = conn.SetReadDeadline(time.Now().Add(promptBrokerIOTimeout))
+	if err := json.NewDecoder(io.LimitReader(conn, 4096)).Decode(&req); err != nil {
+		writePromptBrokerResponse(conn, promptBrokerResponse{Error: err.Error()})
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{}) // User input has no short network deadline.
 	if req.Token != token {
-		_ = json.NewEncoder(conn).Encode(promptBrokerResponse{Error: "invalid prompt broker token"})
+		writePromptBrokerResponse(conn, promptBrokerResponse{Error: "invalid prompt broker token"})
 		return
 	}
 
 	respCh := make(chan promptBrokerResponse, 1)
 	cancel := make(chan struct{})
+	promptDone := make(chan struct{})
 	go func() {
-		promptMu.Lock()
-		defer promptMu.Unlock()
+		defer close(promptDone)
+		select {
+		case promptSlot <- struct{}{}:
+			defer func() { <-promptSlot }()
+		case <-cancel:
+			return
+		case <-stopped:
+			return
+		}
+		// Acquiring a slot and cancellation may become ready together.
+		select {
+		case <-cancel:
+			return
+		case <-stopped:
+			return
+		default:
+		}
 
 		var (
 			value string
@@ -154,13 +212,17 @@ func handlePromptBrokerConn(conn net.Conn, token string, promptMu *sync.Mutex, s
 		close(peerGone)
 	}()
 
+	defer func() {
+		close(cancel)
+		_ = conn.Close()
+		<-promptDone
+		<-peerGone
+	}()
 	select {
 	case resp := <-respCh:
-		_ = json.NewEncoder(conn).Encode(resp)
+		writePromptBrokerResponse(conn, resp)
 	case <-peerGone:
-		close(cancel)
 	case <-stopped:
-		close(cancel)
 	}
 }
 
@@ -175,7 +237,7 @@ func requestPromptBroker(op string) (string, bool, error) {
 		network = "tcp"
 	}
 
-	conn, err := net.Dial(network, addr)
+	conn, err := net.DialTimeout(network, addr, promptBrokerIOTimeout)
 	if err != nil {
 		return "", true, fmt.Errorf("connect prompt broker: %w", err)
 	}
@@ -208,34 +270,13 @@ func readBrokerPromptLine(cancel <-chan struct{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = file.Close() }()
-
-	resultCh := make(chan struct {
-		value string
-		err   error
-	}, 1)
-	go func() {
-		line, readErr := bufio.NewReader(file).ReadString('\n')
-		if readErr != nil && readErr != io.EOF {
-			resultCh <- struct {
-				value string
-				err   error
-			}{"", readErr}
-			return
+	return readCancelablePromptTTY(file, cancel, func() (string, error) {
+		line, err := bufio.NewReader(file).ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", err
 		}
-		resultCh <- struct {
-			value string
-			err   error
-		}{strings.TrimSpace(line), nil}
-	}()
-
-	select {
-	case result := <-resultCh:
-		return result.value, result.err
-	case <-cancel:
-		_ = file.Close()
-		return "", fmt.Errorf("prompt cancelled")
-	}
+		return strings.TrimSpace(line), nil
+	})
 }
 
 func readBrokerPromptPassword(cancel <-chan struct{}) (string, error) {
@@ -243,40 +284,18 @@ func readBrokerPromptPassword(cancel <-chan struct{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = file.Close() }()
-
-	resultCh := make(chan struct {
-		value string
-		err   error
-	}, 1)
-	go func() {
-		pass, readErr := term.ReadPassword(int(file.Fd()))
-		if readErr != nil {
-			resultCh <- struct {
-				value string
-				err   error
-			}{"", readErr}
-			return
-		}
-		resultCh <- struct {
-			value string
-			err   error
-		}{string(pass), nil}
-	}()
-
-	select {
-	case result := <-resultCh:
-		return result.value, result.err
-	case <-cancel:
-		_ = file.Close()
-		return "", fmt.Errorf("prompt cancelled")
-	}
+	return readCancelablePromptTTY(file, cancel, func() (string, error) {
+		pass, err := term.ReadPassword(int(file.Fd()))
+		return string(pass), err
+	})
 }
 
 func openPromptTTY() (*os.File, error) {
 	device := "/dev/tty"
 	if runtime.GOOS == "windows" {
-		device = "CONIN$"
+		// ReadPassword changes/restores console mode; a read-only CONIN$
+		// handle rejects that operation with ERROR_ACCESS_DENIED.
+		return os.OpenFile("CONIN$", os.O_RDWR, 0)
 	}
 	return os.Open(device)
 }

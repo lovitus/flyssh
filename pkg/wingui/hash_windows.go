@@ -75,7 +75,11 @@ func (a *app) hashSelection(requested side) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.hashCancel = cancel
+	canceled := a.operationCanceled || a.closing
 	a.mu.Unlock()
+	if canceled {
+		cancel()
+	}
 	a.setStatus(fmt.Sprintf("hashing %d %s file(s) with %s", len(targets), requested, method))
 	go func() {
 		defer func() {

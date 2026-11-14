@@ -487,18 +487,23 @@ func runInternalRsyncTransport(args []string) int {
 	session.Stdout = os.Stdout
 	session.Stderr = os.Stderr
 
+	input, err := rawStdinReader()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "flyssh: open rsync input: %v\n", err)
+		return 255
+	}
 	remoteCmd := transfer.BuildRemoteRsyncCommand(args[1:])
 	if err := session.Start(remoteCmd); err != nil {
+		_ = input.Close()
 		fmt.Fprintf(os.Stderr, "flyssh: start remote rsync server: %v\n", err)
 		return 255
 	}
-
-	go func() {
-		io.Copy(stdinPipe, rawStdinReader())
-		stdinPipe.Close()
-	}()
-
-	if err := session.Wait(); err != nil {
+	// Close the owned outer transport first so nested channel Close writes
+	// cannot prevent reaching the underlying connection. Existing ProxyJump
+	// construction may hide earlier clients; this guarantee covers owned hops.
+	// Forwarding cleanup still runs in the defer.
+	abort := func() { abortRsyncTransports(allClients) }
+	if err := waitRsyncTransport(input, stdinPipe, session.Wait, abort); err != nil {
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			return exitErr.ExitStatus()
 		}

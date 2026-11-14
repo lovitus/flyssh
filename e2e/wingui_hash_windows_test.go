@@ -499,18 +499,50 @@ func (u *hashUIDriver) logText(main uintptr) string {
 	}
 	return ""
 }
+
+// listItems reads the test fixture's short filename/metadata rows. These native
+// messages are not an atomic snapshot: refresh can remove a row after GETCOUNT.
+// LB_ERR means retry, not a length (adding one to uintptr(-1) wraps to zero).
+// Use a generously sized fixture buffer instead of GETTEXTLEN followed by a
+// right-sized allocation: a replacement row can grow between those messages.
+func (u *hashUIDriver) listItems(list uintptr) ([]string, bool) {
+	const lbErr = ^uintptr(0)
+	count := u.send(list, 0x018B, 0, 0)
+	if count == lbErr {
+		return nil, false
+	}
+	buf := make([]uint16, 64*1024)
+	items := make([]string, 0, count)
+	for i := uintptr(0); i < count; i++ {
+		n := u.send(list, 0x0189, i, uintptr(unsafe.Pointer(&buf[0])))
+		if n == lbErr {
+			return nil, false
+		}
+		if n >= uintptr(len(buf)) {
+			u.t.Fatal("fixture list row exceeded native read buffer")
+		}
+		items = append(items, syscall.UTF16ToString(buf[:n]))
+	}
+	if u.send(list, 0x018B, 0, 0) != count {
+		return nil, false
+	}
+	return items, true
+}
+
 func (u *hashUIDriver) selectItems(list uintptr, names ...string) {
 	u.t.Helper()
 	u.send(list, 0x0185, 0, ^uintptr(0)) // LB_SETSEL: clear all
+	var items []string
+	u.wait("stable file list for selection", func() bool {
+		var ok bool
+		items, ok = u.listItems(list)
+		return ok
+	})
 	for _, name := range names {
 		found := false
-		count := u.send(list, 0x018B, 0, 0)
-		for i := uintptr(0); i < count; i++ {
-			n := u.send(list, 0x018A, i, 0)
-			buf := make([]uint16, n+1)
-			u.send(list, 0x0189, i, uintptr(unsafe.Pointer(&buf[0])))
-			if strings.HasPrefix(syscall.UTF16ToString(buf), name+" ") {
-				u.send(list, 0x0185, 1, i)
+		for i, item := range items {
+			if strings.HasPrefix(item, name+" ") {
+				u.send(list, 0x0185, 1, uintptr(i))
 				found = true
 				break
 			}
