@@ -211,12 +211,13 @@ func sortComboItems(u *hashUIDriver, combo uintptr) []string {
 }
 
 func sortListNames(u *hashUIDriver, list uintptr) []string {
+	items, ok := u.listItems(list)
+	if !ok {
+		return nil // The polling caller must wait for the next complete snapshot.
+	}
 	var names []string
-	for i, count := uintptr(0), u.send(list, 0x018B, 0, 0); i < count; i++ {
-		n := u.send(list, 0x018A, i, 0)
-		buf := make([]uint16, n+1)
-		u.send(list, 0x0189, i, uintptr(unsafe.Pointer(&buf[0])))
-		name, _, _ := strings.Cut(syscall.UTF16ToString(buf), "  ")
+	for _, item := range items {
+		name, _, _ := strings.Cut(item, "  ")
 		names = append(names, name)
 	}
 	return names

@@ -4,7 +4,9 @@ package e2e_test
 
 import (
 	"fmt"
+	"reflect"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -45,6 +47,57 @@ func TestWindowsGUIMessageBufferLifetime(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("native buffer test timed out")
 		}
+	}
+}
+
+// Force an actual native refresh between GETCOUNT and the first row read.
+// The former helper converted LB_ERR from GETTEXTLEN to a zero-sized buffer
+// and panicked. No timing or production executable is needed to reproduce it.
+func TestWindowsGUIListSnapshotDuringRefresh(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		t.Run(fmt.Sprintf("replace=%v", replace), func(t *testing.T) {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			class, _ := syscall.UTF16PtrFromString("LISTBOX")
+			hwnd, _, err := hashUser32.NewProc("CreateWindowExW").Call(0, uintptr(unsafe.Pointer(class)), 0, 0, 0, 0, 10, 10, 0, 0, 0, 0)
+			if hwnd == 0 {
+				t.Fatalf("CreateWindowExW: %v", err)
+			}
+			defer hashUser32.NewProc("DestroyWindow").Call(hwnd)
+			u := &hashUIDriver{t: t}
+			add := func(text string) {
+				value, _ := syscall.UTF16PtrFromString(text)
+				u.send(hwnd, 0x0180, 0, uintptr(unsafe.Pointer(value)))
+			}
+			add("a  metadata")
+			calls := 0
+			longName := strings.Repeat("long", 1024)
+			u.beforeSend = func() {
+				calls++
+				if calls != 2 {
+					return
+				}
+				u.beforeSend = nil
+				u.send(hwnd, 0x0184, 0, 0) // LB_RESETCONTENT between count and row read.
+				if replace {
+					add(longName + "  metadata")
+				}
+			}
+			got := sortListNames(u, hwnd)
+			if replace {
+				if !reflect.DeepEqual(got, []string{longName}) {
+					t.Fatalf("replacement snapshot mismatch: %v", got)
+				}
+			} else {
+				if got != nil {
+					t.Fatalf("removed row must invalidate snapshot: %v", got)
+				}
+				add("(empty)")
+				if got := sortListNames(u, hwnd); !reflect.DeepEqual(got, []string{"(empty)"}) {
+					t.Fatalf("next stable snapshot: %v", got)
+				}
+			}
+		})
 	}
 }
 
