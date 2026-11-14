@@ -25,7 +25,19 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var terminalLogMu sync.Mutex
+var terminalMirrorsOnce sync.Once
+var terminalStdout, terminalStderr *bestEffortWriter
+
+func terminalMirror(out *os.File) io.Writer {
+	terminalMirrorsOnce.Do(func() {
+		terminalStdout = newBestEffortWriter(os.Stdout, 256*1024)
+		terminalStderr = newBestEffortWriter(os.Stderr, 256*1024)
+	})
+	if out == os.Stdout {
+		return terminalStdout
+	}
+	return terminalStderr
+}
 
 type side string
 
@@ -168,9 +180,16 @@ func (s selectionState) names() ([]string, error) {
 }
 
 type childProcess struct {
-	cmd  *exec.Cmd
-	job  windows.Handle
-	once sync.Once
+	cmd   *exec.Cmd
+	job   windows.Handle
+	once  sync.Once
+	pipes []io.ReadCloser
+}
+
+func (c *childProcess) closePipes() {
+	for _, pipe := range c.pipes {
+		_ = pipe.Close()
+	}
 }
 
 type activeShellGateway struct {
@@ -232,6 +251,11 @@ type app struct {
 	secureButton        *walk.PushButton
 	log                 *walk.TextEdit
 
+	logPending           pendingLog
+	logText              string // UI thread only
+	terminalDropped      uint64 // guarded by mu
+	closing              bool   // guarded by mu
+	operationCanceled    bool   // guarded by mu, reset by startOperation
 	mu                   sync.Mutex
 	localNav             navState
 	remoteNav            navState
@@ -366,6 +390,10 @@ func (a *app) run() error {
 		return err
 	}
 	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		a.mu.Lock()
+		a.closing = true
+		a.mu.Unlock()
+		a.logPending.clear(true)
 		a.killCurrent()
 		a.killShellGateway()
 	})
@@ -1334,11 +1362,12 @@ func (a *app) startOperation() bool {
 
 func (a *app) startOperationWithStatus(status string) bool {
 	a.mu.Lock()
-	if a.busy {
+	if a.busy || a.closing {
 		a.mu.Unlock()
 		return false
 	}
 	a.busy = true
+	a.operationCanceled = false
 	a.mu.Unlock()
 	a.setStatus(status)
 	a.setButtons()
@@ -1459,15 +1488,13 @@ func (a *app) ensureShellGateway() (*activeShellGateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.mu.Lock()
-	a.current = child
-	a.mu.Unlock()
+	a.publishChild(child)
 	a.appendMainLogLine("spawn: " + childDescription(args))
 
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
-		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stderr, "child stderr"), guiLogWriter{a: a}), stderr)
+		a.copyChildLog(child, os.Stderr, stderr, "child stderr")
 	}()
 
 	reader := bufio.NewReader(stdout)
@@ -1475,6 +1502,7 @@ func (a *app) ensureShellGateway() (*activeShellGateway, error) {
 	if readErr != nil {
 		child.kill()
 		waitErr := child.wait()
+		child.closePipes()
 		<-stderrDone
 		a.clearCurrentChild(child)
 		if waitErr != nil {
@@ -1487,6 +1515,7 @@ func (a *app) ensureShellGateway() (*activeShellGateway, error) {
 	if err := json.Unmarshal(bytes.TrimSpace(line), &info); err != nil {
 		child.kill()
 		_ = child.wait()
+		child.closePipes()
 		<-stderrDone
 		a.clearCurrentChild(child)
 		return nil, fmt.Errorf("parse shell gateway readiness: %w", err)
@@ -1494,6 +1523,7 @@ func (a *app) ensureShellGateway() (*activeShellGateway, error) {
 	if info.Port < 1 || info.Port > 65535 || len(info.HostKeys) == 0 {
 		child.kill()
 		_ = child.wait()
+		child.closePipes()
 		<-stderrDone
 		a.clearCurrentChild(child)
 		return nil, fmt.Errorf("invalid shell gateway readiness")
@@ -1504,23 +1534,44 @@ func (a *app) ensureShellGateway() (*activeShellGateway, error) {
 	if a.current == child {
 		a.current = nil
 	}
-	a.shellGateway = active
+	canceled := a.operationCanceled || a.closing
+	if !canceled {
+		a.shellGateway = active
+	}
 	a.mu.Unlock()
+	if canceled {
+		child.kill()
+		_ = child.wait()
+		child.closePipes()
+		<-stderrDone
+		return nil, context.Canceled
+	}
 	a.appendMainLogLine(fmt.Sprintf("shell gateway ready on 127.0.0.1:%d", info.Port))
 
 	stdoutDone := make(chan struct{})
 	go func() {
 		defer close(stdoutDone)
-		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stdout, "child stdout"), guiLogWriter{a: a}), reader)
+		a.copyChildLog(child, os.Stdout, reader, "child stdout")
 	}()
 	go a.waitShellGateway(active, stdoutDone, stderrDone)
 	return active, nil
 }
 
+func (a *app) copyChildLog(child *childProcess, out *os.File, src io.Reader, source string) {
+	n, err := io.Copy(io.MultiWriter(newTerminalSourceWriter(terminalMirror(out), source), guiLogWriter{a: a}), src)
+	if err != nil {
+		child.kill()
+		a.appendMainLogLine(fmt.Sprintf("%s after %d bytes: %v", source, n, err))
+	}
+}
+
 func (a *app) waitShellGateway(active *activeShellGateway, stdoutDone, stderrDone <-chan struct{}) {
+	defer active.child.closePipes()
 	err := active.child.wait()
+	timer := time.AfterFunc(2*time.Second, active.child.closePipes)
 	<-stdoutDone
 	<-stderrDone
+	timer.Stop()
 	code := 0
 	if err != nil {
 		code = 1
@@ -1537,6 +1588,18 @@ func (a *app) waitShellGateway(active *activeShellGateway, stdoutDone, stderrDon
 	a.setButtons()
 }
 
+func (a *app) publishChild(child *childProcess) {
+	a.mu.Lock()
+	canceled := a.operationCanceled || a.closing
+	if !canceled {
+		a.current = child
+	}
+	a.mu.Unlock()
+	if canceled {
+		child.kill()
+	}
+}
+
 func (a *app) clearCurrentChild(child *childProcess) {
 	a.mu.Lock()
 	if a.current == child {
@@ -1546,39 +1609,62 @@ func (a *app) clearCurrentChild(child *childProcess) {
 }
 
 func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
+	a.mu.Lock()
+	canceled := a.operationCanceled || a.closing
+	a.mu.Unlock()
+	if canceled {
+		return nil, -1, context.Canceled
+	}
 	a.appendMainLogLine("command: " + formatChildCommand(a.exe, args))
 	child, stdout, stderr, err := startChild(a.exe, args)
 	if err != nil {
 		return nil, 1, err
 	}
-	a.mu.Lock()
-	a.current = child
-	a.mu.Unlock()
+	a.publishChild(child)
 	a.appendMainLogLine("spawn: " + childDescription(args))
 
+	defer child.closePipes()
+	defer a.clearCurrentChild(child)
 	var stdoutBuf bytes.Buffer
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		if captureStdout {
-			_, _ = io.Copy(&stdoutBuf, stdout)
-			return
+	copyDone := make(chan error, 2)
+	copyOutput := func(dst io.Writer, src io.Reader, name string) {
+		n, copyErr := io.Copy(dst, src)
+		if copyErr != nil {
+			child.kill()
+			copyErr = fmt.Errorf("%s after %d bytes: %w", name, n, copyErr)
 		}
-		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stdout, "child stdout"), guiLogWriter{a: a}), stdout)
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(io.MultiWriter(newTerminalSourceWriter(os.Stderr, "child stderr"), guiLogWriter{a: a}), stderr)
-	}()
+		copyDone <- copyErr
+	}
+	var stdoutWriter io.Writer = io.MultiWriter(newTerminalSourceWriter(terminalMirror(os.Stdout), "child stdout"), guiLogWriter{a: a})
+	if captureStdout {
+		stdoutWriter = &stdoutBuf
+	}
+	go copyOutput(stdoutWriter, stdout, "child stdout")
+	go copyOutput(io.MultiWriter(newTerminalSourceWriter(terminalMirror(os.Stderr), "child stderr"), guiLogWriter{a: a}), stderr, "child stderr")
 
-	// Drain both pipes before Wait closes them, including the last hash result.
-	wg.Wait()
+	// We own these pipes, so Wait cannot truncate the final hash/list result.
+	// Close the Job as soon as the direct child exits, then drain its tail. An
+	// escaped descendant holding a write handle cannot keep the GUI busy forever.
 	err = child.wait()
+	waitErr := err
+	drainTimer := time.AfterFunc(2*time.Second, child.closePipes)
+	var copyErr error
+	for i := 0; i < 2; i++ {
+		if e := <-copyDone; e != nil && copyErr == nil {
+			copyErr = e
+		}
+	}
+	drainTimer.Stop()
+	if copyErr != nil {
+		a.appendMainLogLine(copyErr.Error())
+		if err == nil {
+			err = copyErr
+		}
+	}
 	code := 0
-	if err != nil {
+	if waitErr != nil {
 		code = 1
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			code = exitErr.ExitCode()
 		}
 	}
@@ -1589,36 +1675,46 @@ func (a *app) runChild(args []string, captureStdout bool) ([]byte, int, error) {
 func startChild(executable string, args []string) (*childProcess, io.ReadCloser, io.ReadCloser, error) {
 	cmd := exec.Command(executable, args...)
 	cmd.Stdin = os.Stdin
-	stdout, err := cmd.StdoutPipe()
+	stdout, stdoutWrite, err := os.Pipe()
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	stderr, err := cmd.StderrPipe()
+	defer stdoutWrite.Close()
+	stderr, stderrWrite, err := os.Pipe()
 	if err != nil {
+		_ = stdout.Close()
 		return nil, nil, nil, err
 	}
+	defer stderrWrite.Close()
+	child := &childProcess{cmd: cmd, pipes: []io.ReadCloser{stdout, stderr}}
+	success := false
+	defer func() {
+		if !success {
+			child.closePipes()
+			child.closeJob()
+		}
+	}()
+	cmd.Stdout, cmd.Stderr = stdoutWrite, stderrWrite
 	job, err := createKillOnCloseJob()
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	child.job = job
 	if err := cmd.Start(); err != nil {
-		_ = windows.CloseHandle(job)
 		return nil, nil, nil, err
 	}
 	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
+	if err == nil {
+		err = windows.AssignProcessToJobObject(job, process)
+		_ = windows.CloseHandle(process)
+	}
 	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = windows.CloseHandle(job)
+		child.kill()
+		_ = cmd.Wait() // Reap a successfully started process on every failure path.
 		return nil, nil, nil, err
 	}
-	err = windows.AssignProcessToJobObject(job, process)
-	_ = windows.CloseHandle(process)
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = windows.CloseHandle(job)
-		return nil, nil, nil, err
-	}
-	return &childProcess{cmd: cmd, job: job}, stdout, stderr, nil
+	success = true
+	return child, stdout, stderr, nil
 }
 
 func createKillOnCloseJob() (windows.Handle, error) {
@@ -1643,6 +1739,7 @@ func createKillOnCloseJob() (windows.Handle, error) {
 
 func (a *app) killCurrent() {
 	a.mu.Lock()
+	a.operationCanceled = true
 	child := a.current
 	cancel := a.hashCancel
 	a.mu.Unlock()
@@ -1735,29 +1832,56 @@ func (a *app) appendLogLineFrom(source, line string) {
 	now := time.Now().Format("15:04:05")
 	a.appendLogText(now + " " + line + "\r\n")
 	writeTerminalLogLine(source, now, line)
+	dropped := terminalStdout.droppedBytes() + terminalStderr.droppedBytes()
+	a.mu.Lock()
+	previous := a.terminalDropped
+	a.terminalDropped = dropped
+	a.mu.Unlock()
+	if dropped > previous {
+		a.appendLogText(fmt.Sprintf("%s terminal mirror omitted %d bytes (blocked, full, or failed); pipe draining continues\r\n", now, dropped-previous))
+	}
 }
 
 func (a *app) appendLogText(text string) {
 	if text == "" {
 		return
 	}
-	a.ui(func() {
-		a.log.AppendText(text)
-		end := a.log.TextLength()
-		a.log.SetTextSelection(end, end)
-		a.log.ScrollToCaret()
+	a.logPending.append(text, func() {
+		a.ui(func() {
+			text := a.logPending.take()
+			if text == "" || a.log == nil {
+				return
+			}
+			a.logText = logTail(a.logText+text, guiRetainedLogBytes)
+			_ = a.log.SetText(a.logText)
+			end := a.log.TextLength()
+			a.log.SetTextSelection(end, end)
+			a.log.ScrollToCaret()
+		})
 	})
 }
 
 func (a *app) clearLog() {
 	a.ui(func() {
+		a.logPending.clear(false)
+		a.logText = ""
 		a.log.SetText("")
 	})
 }
 
 func (a *app) ui(fn func()) {
-	if a.mw != nil {
-		a.mw.Synchronize(fn)
+	a.mu.Lock()
+	closing := a.closing
+	a.mu.Unlock()
+	if a.mw != nil && !closing {
+		a.mw.Synchronize(func() {
+			a.mu.Lock()
+			closing := a.closing
+			a.mu.Unlock()
+			if !closing {
+				fn()
+			}
+		})
 	}
 }
 
@@ -1783,39 +1907,34 @@ func newTerminalSourceWriter(out io.Writer, source string) *terminalSourceWriter
 }
 
 func (w *terminalSourceWriter) Write(p []byte) (int, error) {
-	terminalLogMu.Lock()
-	defer terminalLogMu.Unlock()
-
-	written := 0
+	var record bytes.Buffer
 	remaining := p
 	for len(remaining) > 0 {
 		if w.atLineStart {
-			if _, err := fmt.Fprintf(w.out, "%s [%s] ", time.Now().Format("15:04:05"), w.source); err != nil {
-				return written, err
-			}
+			fmt.Fprintf(&record, "%s [%s] ", time.Now().Format("15:04:05"), w.source)
 			w.atLineStart = false
 		}
 		next := bytes.IndexByte(remaining, '\n')
 		if next < 0 {
-			n, err := w.out.Write(remaining)
-			written += n
-			return written, err
+			record.Write(remaining)
+			break
 		}
-		n, err := w.out.Write(remaining[:next+1])
-		written += n
-		if err != nil {
-			return written, err
-		}
+		record.Write(remaining[:next+1])
 		w.atLineStart = true
 		remaining = remaining[next+1:]
+	}
+	n, err := w.out.Write(record.Bytes())
+	if err != nil {
+		return 0, err
+	}
+	if n != record.Len() {
+		return 0, io.ErrShortWrite
 	}
 	return len(p), nil
 }
 
 func writeTerminalLogLine(source, timestamp, line string) {
-	terminalLogMu.Lock()
-	defer terminalLogMu.Unlock()
-	fmt.Fprintf(os.Stderr, "%s [%s] %s\n", timestamp, source, line)
+	fmt.Fprintf(terminalMirror(os.Stderr), "%s [%s] %s\n", timestamp, source, line)
 }
 
 func listLocal(dir string) ([]fileEntry, error) {

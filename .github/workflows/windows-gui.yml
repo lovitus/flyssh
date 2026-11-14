@@ -39,8 +39,11 @@ jobs:
             rm "${relay_dir}/${name}"
           done
 
-      - name: Windows GUI unit tests
-        run: go test ./pkg/wingui -v -count=1 -timeout 3m
+      - name: Windows transport, prompt, and GUI lifecycle tests
+        run: go test . ./pkg/auth ./pkg/wingui -v -count=1 -timeout 3m
+
+      - name: Windows lifecycle race detector
+        run: go test -race . ./pkg/auth ./pkg/wingui -count=1 -timeout 3m
 
       - name: Build Windows release-mode executables
         shell: bash
